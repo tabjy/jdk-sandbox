@@ -24,6 +24,8 @@
  */
 package jdk.tools.jlink.internal.plugins;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -43,19 +45,21 @@ import jdk.internal.org.objectweb.asm.Type;
 import jdk.internal.org.objectweb.asm.tree.AbstractInsnNode;
 import jdk.internal.org.objectweb.asm.tree.ClassNode;
 import jdk.internal.org.objectweb.asm.tree.InsnList;
+import jdk.internal.org.objectweb.asm.tree.JumpInsnNode;
 import jdk.internal.org.objectweb.asm.tree.LabelNode;
 import jdk.internal.org.objectweb.asm.tree.LdcInsnNode;
 import jdk.internal.org.objectweb.asm.tree.LineNumberNode;
 import jdk.internal.org.objectweb.asm.tree.MethodInsnNode;
 import jdk.internal.org.objectweb.asm.tree.MethodNode;
+import jdk.internal.org.objectweb.asm.tree.TryCatchBlockNode;
 
 public final class ClassForNamePlugin implements Plugin {
     public static final String NAME = "class-for-name";
     private static final String GLOBAL = "global";
     private static final String MODULE = "module";
+    private static final String CLASS_NOT_FOUND_EXCEPTION = "java/lang/ClassNotFoundException";
     private boolean isGlobalTransformation;
     private final DependencyPluginFactory factory;
-
 
     public ClassForNamePlugin() {
         this.factory = new DependencyPluginFactory();
@@ -83,7 +87,32 @@ public final class ClassForNamePlugin implements Plugin {
         return factory.create();
     }
 
-    private void modifyInstructions(LdcInsnNode ldc, InsnList il, MethodInsnNode min, String thatClassName) {
+    private void updateHandlerMap(int index, Map<TryCatchBlockNode, TryCatchState> handlers) {
+
+        TryCatchState tightestHandler = null;
+        for (TryCatchBlockNode tryCatch : handlers.keySet()) {
+            TryCatchState tryCatchState = handlers.get(tryCatch);
+            if (tryCatchState.startOffset <= index && tryCatchState.endOffset >= index) {
+                if (tightestHandler == null) {
+                    tightestHandler = tryCatchState;
+                } else {
+                    if (tryCatchState.startOffset > tightestHandler.startOffset
+                            && tryCatchState.endOffset < tightestHandler.endOffset) {
+                        tightestHandler = tryCatchState;
+                    }
+                }
+            }
+        }
+        if (tightestHandler != null) {
+            tightestHandler.setCoversRemovedCFN();
+        }
+    }
+
+    private void modifyInstructions(LdcInsnNode ldc, InsnList il, MethodInsnNode min, String thatClassName,
+                                    Map<TryCatchBlockNode, TryCatchState> handlers) {
+
+        updateHandlerMap(il.indexOf(ldc), handlers);
+
         Type type = Type.getObjectType(thatClassName);
         MethodInsnNode lookupInsn = new MethodInsnNode(Opcodes.INVOKESTATIC,
                 "java/lang/invoke/MethodHandles",
@@ -98,21 +127,25 @@ public final class ClassForNamePlugin implements Plugin {
         il.insert(lookupInsn, ldcInsn);
         il.insert(ldcInsn, ensureInitializedInsn);
     }
-
     private ResourcePoolEntry transform(ResourcePoolEntry resource, ResourcePool pool) {
         byte[] inBytes = resource.contentBytes();
         ClassReader cr = new ClassReader(inBytes);
         ClassNode cn = new ClassNode();
-        cr.accept(cn, EXPAND_FRAMES);
+        cr.accept(cn, SKIP_FRAMES);
         List<MethodNode> ms = cn.methods;
         boolean modified = false;
         LdcInsnNode ldc = null;
-
         String thisPackage = getPackage(binaryClassName(resource.path()));
 
         for (MethodNode mn : ms) {
             InsnList il = mn.instructions;
             Iterator<AbstractInsnNode> it = il.iterator();
+
+            /* Map of exception handlers and their covered ranges */
+            Map<TryCatchBlockNode, TryCatchState> handlers = new HashMap<>();
+            for (TryCatchBlockNode tryCatch : mn.tryCatchBlocks) {
+                handlers.put(tryCatch, new TryCatchState(tryCatch, il));
+            }
 
             while (it.hasNext()) {
                 AbstractInsnNode insn = it.next();
@@ -131,7 +164,7 @@ public final class ClassForNamePlugin implements Plugin {
 
                         if (isGlobalTransformation) {
                             /* Blindly transform bytecode */
-                            modifyInstructions(ldc, il, min, thatClassName);
+                            modifyInstructions(ldc, il, min, thatClassName, handlers);
                             modified = true;
                         } else {
                             /* Transform calls for classes within the same module */
@@ -145,7 +178,7 @@ public final class ClassForNamePlugin implements Plugin {
                                 if ((thatAccess & Opcodes.ACC_PRIVATE) != Opcodes.ACC_PRIVATE &&
                                         ((thatAccess & Opcodes.ACC_PUBLIC) == Opcodes.ACC_PUBLIC ||
                                                 thisPackage.equals(thatPackage))) {
-                                    modifyInstructions(ldc, il, min, thatClassName);
+                                    modifyInstructions(ldc, il, min, thatClassName, handlers);
                                     modified = true;
 
                                 }
@@ -155,7 +188,7 @@ public final class ClassForNamePlugin implements Plugin {
                                 if (targetModule != null
                                         && ModuleGraphPlugin.isAccessible(thatClassName,
                                         resource.moduleName(), targetModule.name())) {
-                                    modifyInstructions(ldc, il, min, thatClassName);
+                                    modifyInstructions(ldc, il, min, thatClassName, handlers);
                                     modified = true;
                                 }
                             }
@@ -168,10 +201,11 @@ public final class ClassForNamePlugin implements Plugin {
                 }
 
             }
+            removeUnreachableExceptionHandlers(handlers, mn);
         }
 
         if (modified) {
-            ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_MAXS);
+            ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_FRAMES);
             cn.accept(cw);
             byte[] outBytes = cw.toByteArray();
 
@@ -179,6 +213,34 @@ public final class ClassForNamePlugin implements Plugin {
         }
 
         return resource;
+    }
+
+    private static void removeUnreachableExceptionHandlers(Map<TryCatchBlockNode, TryCatchState> handlers, MethodNode mn) {
+
+        Map<TryCatchBlockNode, List<AbstractInsnNode>> removalMap = new HashMap<>();
+        for (TryCatchBlockNode tryCatch : handlers.keySet()) {
+            TryCatchState state = handlers.get(tryCatch);
+            if (tryCatch.type.equals(CLASS_NOT_FOUND_EXCEPTION)
+                    && state.coversRemovedCFN && state.handlerOffset != 0) {
+                List<AbstractInsnNode> insnToRemove = getInstructionsInRange(state.handlerOffset,
+                        state.handlerOffsetEnd, mn.instructions);
+                removalMap.put(tryCatch, insnToRemove);
+            }
+        }
+
+        for (TryCatchBlockNode tryCatch : removalMap.keySet()) {
+            for (AbstractInsnNode r : removalMap.get(tryCatch)) {
+                mn.instructions.remove(r);
+            }
+            mn.tryCatchBlocks.remove(tryCatch);
+        }
+    }
+    private static List<AbstractInsnNode> getInstructionsInRange(int start, int end, InsnList il) {
+        List<AbstractInsnNode> instructions = new ArrayList<>();
+        for (int i = start; i < end; i++) {
+            instructions.add(il.get(i));
+        }
+        return instructions;
     }
 
     private ResourcePoolModule getTargetModule(ResourcePool pool, String givenClass) {
@@ -202,7 +264,8 @@ public final class ClassForNamePlugin implements Plugin {
                 .forEach(resource -> {
                     String path = resource.path();
 
-                    if (path.endsWith(".class") && !path.endsWith("/module-info.class")) {
+                    // TODO remove java.base check. In place right now to make debugging easier.
+                    if (path.endsWith(".class") && !path.endsWith("/module-info.class") && ! resource.moduleName().equals("java.base")) {
                         out.add(transform(resource, in));
                     } else {
                         out.add(resource);
@@ -238,6 +301,28 @@ public final class ClassForNamePlugin implements Plugin {
             } else if (! arg.equalsIgnoreCase(MODULE)){
                 throw new IllegalArgumentException(getName() + ": " + arg);
             }
+        }
+    }
+
+    class TryCatchState {
+        boolean coversRemovedCFN;
+        int startOffset;
+        int endOffset;
+        int handlerOffset;
+        int handlerOffsetEnd;
+
+        TryCatchState(TryCatchBlockNode node, InsnList il) {
+            startOffset = il.indexOf(node.start);
+            endOffset = il.indexOf(node.end);
+            handlerOffset = il.indexOf(node.handler);
+            AbstractInsnNode insn = node.handler.getPrevious();
+            if (insn instanceof JumpInsnNode) {
+                handlerOffsetEnd = il.indexOf(((JumpInsnNode) insn).label) + 1;
+            }
+        }
+
+        void setCoversRemovedCFN() {
+            this.coversRemovedCFN = true;
         }
     }
 
