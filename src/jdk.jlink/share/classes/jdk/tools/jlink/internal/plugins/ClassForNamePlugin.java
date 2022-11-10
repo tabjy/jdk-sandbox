@@ -87,31 +87,38 @@ public final class ClassForNamePlugin implements Plugin {
         return factory.create();
     }
 
-    private void updateHandlerMap(int index, Map<TryCatchBlockNode, TryCatchState> handlers) {
+    private void updateHandlerMap(int index, Map<TryCatchBlockNode, TryCatchState> handlers,
+                                  boolean isTransformed, AbstractInsnNode insn, InsnList il) {
 
         TryCatchState tightestHandler = null;
+        int tightestStart = -1;
+        int tightestEnd = -1;
         for (TryCatchBlockNode tryCatch : handlers.keySet()) {
             TryCatchState tryCatchState = handlers.get(tryCatch);
-            if (tryCatchState.startOffset <= index && tryCatchState.endOffset >= index) {
+            int currStart = il.indexOf(tryCatch.start);
+            int currEnd = il.indexOf(tryCatch.end);
+            if (currStart <= index && currEnd >= index) {
                 if (tightestHandler == null) {
                     tightestHandler = tryCatchState;
+                    tightestStart = currStart;
+                    tightestEnd = currEnd;
                 } else {
-                    if (tryCatchState.startOffset > tightestHandler.startOffset
-                            && tryCatchState.endOffset < tightestHandler.endOffset) {
+                    if (currStart > tightestStart
+                            && currEnd < tightestEnd) {
                         tightestHandler = tryCatchState;
+                        tightestStart = currStart;
+                        tightestEnd = currEnd;
                     }
                 }
             }
         }
         if (tightestHandler != null) {
-            tightestHandler.setCoversRemovedCFN();
+            tightestHandler.addCNFCall(insn, isTransformed);
         }
     }
 
-    private void modifyInstructions(LdcInsnNode ldc, InsnList il, MethodInsnNode min, String thatClassName,
-                                    Map<TryCatchBlockNode, TryCatchState> handlers) {
+    private void modifyInstructions(LdcInsnNode ldc, InsnList il, MethodInsnNode min, String thatClassName) {
 
-        updateHandlerMap(il.indexOf(ldc), handlers);
 
         Type type = Type.getObjectType(thatClassName);
         MethodInsnNode lookupInsn = new MethodInsnNode(Opcodes.INVOKESTATIC,
@@ -159,13 +166,16 @@ public final class ClassForNamePlugin implements Plugin {
                             min.name.equals("forName") &&
                             min.owner.equals("java/lang/Class") &&
                             min.desc.equals("(Ljava/lang/String;)Ljava/lang/Class;")) {
+                        boolean isTransformed = false;
+                        int callIndex = il.indexOf(insn);
                         String ldcClassName = ldc.cst.toString();
                         String thatClassName = ldcClassName.replaceAll("\\.", "/");
 
                         if (isGlobalTransformation) {
                             /* Blindly transform bytecode */
-                            modifyInstructions(ldc, il, min, thatClassName, handlers);
+                            modifyInstructions(ldc, il, min, thatClassName);
                             modified = true;
+                            isTransformed = true;
                         } else {
                             /* Transform calls for classes within the same module */
                             Optional<ResourcePoolEntry> thatClass =
@@ -178,8 +188,9 @@ public final class ClassForNamePlugin implements Plugin {
                                 if ((thatAccess & Opcodes.ACC_PRIVATE) != Opcodes.ACC_PRIVATE &&
                                         ((thatAccess & Opcodes.ACC_PUBLIC) == Opcodes.ACC_PUBLIC ||
                                                 thisPackage.equals(thatPackage))) {
-                                    modifyInstructions(ldc, il, min, thatClassName, handlers);
+                                    modifyInstructions(ldc, il, min, thatClassName);
                                     modified = true;
+                                    isTransformed = true;
 
                                 }
                             } else {
@@ -188,11 +199,13 @@ public final class ClassForNamePlugin implements Plugin {
                                 if (targetModule != null
                                         && ModuleGraphPlugin.isAccessible(thatClassName,
                                         resource.moduleName(), targetModule.name())) {
-                                    modifyInstructions(ldc, il, min, thatClassName, handlers);
+                                    modifyInstructions(ldc, il, min, thatClassName);
                                     modified = true;
+                                    isTransformed = true;
                                 }
                             }
                         }
+                        updateHandlerMap(callIndex, handlers, isTransformed, insn, il);
                     }
                     ldc = null;
                 } else if (!(insn instanceof LabelNode) &&
@@ -221,10 +234,16 @@ public final class ClassForNamePlugin implements Plugin {
         for (TryCatchBlockNode tryCatch : handlers.keySet()) {
             TryCatchState state = handlers.get(tryCatch);
             if (tryCatch.type.equals(CLASS_NOT_FOUND_EXCEPTION)
-                    && state.coversRemovedCFN && state.handlerOffset != 0) {
-                List<AbstractInsnNode> insnToRemove = getInstructionsInRange(state.handlerOffset,
-                        state.handlerOffsetEnd, mn.instructions);
-                removalMap.put(tryCatch, insnToRemove);
+                    && state.allCNFCallsTransformed()) {
+
+                int handlerOffset = mn.instructions.indexOf(tryCatch.handler) - 1;
+                AbstractInsnNode insn = tryCatch.handler.getPrevious();
+                if (insn instanceof JumpInsnNode) {
+                    int handlerOffsetEnd = mn.instructions.indexOf(((JumpInsnNode) insn).label);
+                    List<AbstractInsnNode> insnToRemove = getInstructionsInRange(handlerOffset,
+                            handlerOffsetEnd, mn.instructions);
+                    removalMap.put(tryCatch, insnToRemove);
+                }
             }
         }
 
@@ -305,24 +324,23 @@ public final class ClassForNamePlugin implements Plugin {
     }
 
     class TryCatchState {
-        boolean coversRemovedCFN;
-        int startOffset;
-        int endOffset;
-        int handlerOffset;
-        int handlerOffsetEnd;
+        Map<AbstractInsnNode, Boolean> transformedCallMap;
 
         TryCatchState(TryCatchBlockNode node, InsnList il) {
-            startOffset = il.indexOf(node.start);
-            endOffset = il.indexOf(node.end);
-            handlerOffset = il.indexOf(node.handler);
-            AbstractInsnNode insn = node.handler.getPrevious();
-            if (insn instanceof JumpInsnNode) {
-                handlerOffsetEnd = il.indexOf(((JumpInsnNode) insn).label) + 1;
-            }
+            transformedCallMap = new HashMap<>();
         }
 
-        void setCoversRemovedCFN() {
-            this.coversRemovedCFN = true;
+        void addCNFCall(AbstractInsnNode insn, boolean isTransformed) {
+            transformedCallMap.put(insn, isTransformed);
+        }
+
+        boolean allCNFCallsTransformed() {
+            for (AbstractInsnNode insn : transformedCallMap.keySet()) {
+                if (! transformedCallMap.get(insn)) {
+                    return false;
+                }
+            }
+            return true;
         }
     }
 
