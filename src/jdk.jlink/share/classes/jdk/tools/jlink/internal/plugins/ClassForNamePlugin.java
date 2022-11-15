@@ -24,7 +24,6 @@
  */
 package jdk.tools.jlink.internal.plugins;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -32,26 +31,25 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import jdk.internal.org.objectweb.asm.ClassReader;
+import jdk.internal.org.objectweb.asm.ClassVisitor;
+import jdk.internal.org.objectweb.asm.ClassWriter;
+import jdk.internal.org.objectweb.asm.MethodVisitor;
+import jdk.internal.org.objectweb.asm.Opcodes;
+import jdk.internal.org.objectweb.asm.Type;
+import jdk.internal.org.objectweb.asm.tree.*;
+import jdk.internal.org.objectweb.asm.tree.analysis.Analyzer;
+import jdk.internal.org.objectweb.asm.tree.analysis.AnalyzerException;
+import jdk.internal.org.objectweb.asm.tree.analysis.BasicInterpreter;
+import jdk.internal.org.objectweb.asm.tree.analysis.BasicValue;
+import jdk.internal.org.objectweb.asm.tree.analysis.Frame;
 import jdk.tools.jlink.internal.PluginRepository;
 import jdk.tools.jlink.plugin.ResourcePool;
 import jdk.tools.jlink.plugin.ResourcePoolBuilder;
 import jdk.tools.jlink.plugin.ResourcePoolModule;
 import jdk.tools.jlink.plugin.*;
-import jdk.internal.org.objectweb.asm.ClassReader;
+
 import static jdk.internal.org.objectweb.asm.ClassReader.*;
-import jdk.internal.org.objectweb.asm.ClassWriter;
-import jdk.internal.org.objectweb.asm.Opcodes;
-import jdk.internal.org.objectweb.asm.Type;
-import jdk.internal.org.objectweb.asm.tree.AbstractInsnNode;
-import jdk.internal.org.objectweb.asm.tree.ClassNode;
-import jdk.internal.org.objectweb.asm.tree.InsnList;
-import jdk.internal.org.objectweb.asm.tree.JumpInsnNode;
-import jdk.internal.org.objectweb.asm.tree.LabelNode;
-import jdk.internal.org.objectweb.asm.tree.LdcInsnNode;
-import jdk.internal.org.objectweb.asm.tree.LineNumberNode;
-import jdk.internal.org.objectweb.asm.tree.MethodInsnNode;
-import jdk.internal.org.objectweb.asm.tree.MethodNode;
-import jdk.internal.org.objectweb.asm.tree.TryCatchBlockNode;
 
 public final class ClassForNamePlugin implements Plugin {
     public static final String NAME = "class-for-name";
@@ -88,7 +86,7 @@ public final class ClassForNamePlugin implements Plugin {
     }
 
     private void updateHandlerMap(int index, Map<TryCatchBlockNode, TryCatchState> handlers,
-                                  boolean isTransformed, AbstractInsnNode insn, InsnList il) {
+                                  boolean isTransformed, InsnList il) {
 
         TryCatchState tightestHandler = null;
         int tightestStart = -1;
@@ -113,7 +111,11 @@ public final class ClassForNamePlugin implements Plugin {
             }
         }
         if (tightestHandler != null) {
-            tightestHandler.addCNFCall(insn, isTransformed);
+            if (isTransformed) {
+                tightestHandler.setTransformedCFN();
+            } else {
+                tightestHandler.setNotTransformedCFN();
+            }
         }
     }
 
@@ -151,7 +153,7 @@ public final class ClassForNamePlugin implements Plugin {
             /* Map of exception handlers and their covered ranges */
             Map<TryCatchBlockNode, TryCatchState> handlers = new HashMap<>();
             for (TryCatchBlockNode tryCatch : mn.tryCatchBlocks) {
-                handlers.put(tryCatch, new TryCatchState(tryCatch, il));
+                handlers.put(tryCatch, new TryCatchState());
             }
 
             while (it.hasNext()) {
@@ -205,7 +207,7 @@ public final class ClassForNamePlugin implements Plugin {
                                 }
                             }
                         }
-                        updateHandlerMap(callIndex, handlers, isTransformed, insn, il);
+                        updateHandlerMap(callIndex, handlers, isTransformed, il);
                     }
                     ldc = null;
                 } else if (!(insn instanceof LabelNode) &&
@@ -220,9 +222,13 @@ public final class ClassForNamePlugin implements Plugin {
         if (modified) {
             ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_FRAMES);
             cn.accept(cw);
-            byte[] outBytes = cw.toByteArray();
 
-            return resource.copyWithContent(outBytes);
+            ClassReader cr2 = new ClassReader(cw.toByteArray());
+            ClassWriter cw2 = new ClassWriter(cr2, ClassWriter.COMPUTE_FRAMES);
+            ClassAdaptor deadCodeAdaptor = new ClassAdaptor(cw2);
+            cr2.accept(deadCodeAdaptor, SKIP_FRAMES);
+
+            return resource.copyWithContent(cw2.toByteArray());
         }
 
         return resource;
@@ -230,36 +236,13 @@ public final class ClassForNamePlugin implements Plugin {
 
     private static void removeUnreachableExceptionHandlers(Map<TryCatchBlockNode, TryCatchState> handlers, MethodNode mn) {
 
-        Map<TryCatchBlockNode, List<AbstractInsnNode>> removalMap = new HashMap<>();
         for (TryCatchBlockNode tryCatch : handlers.keySet()) {
             TryCatchState state = handlers.get(tryCatch);
-            if (tryCatch.type.equals(CLASS_NOT_FOUND_EXCEPTION)
-                    && state.allCNFCallsTransformed()) {
-
-                int handlerOffset = mn.instructions.indexOf(tryCatch.handler) - 1;
-                AbstractInsnNode insn = tryCatch.handler.getPrevious();
-                if (insn instanceof JumpInsnNode) {
-                    int handlerOffsetEnd = mn.instructions.indexOf(((JumpInsnNode) insn).label);
-                    List<AbstractInsnNode> insnToRemove = getInstructionsInRange(handlerOffset,
-                            handlerOffsetEnd, mn.instructions);
-                    removalMap.put(tryCatch, insnToRemove);
-                }
+            if (tryCatch.type != null && tryCatch.type.equals(CLASS_NOT_FOUND_EXCEPTION)
+                    && state.allCallsTransformed()) {
+                mn.tryCatchBlocks.remove(tryCatch);
             }
         }
-
-        for (TryCatchBlockNode tryCatch : removalMap.keySet()) {
-            for (AbstractInsnNode r : removalMap.get(tryCatch)) {
-                mn.instructions.remove(r);
-            }
-            mn.tryCatchBlocks.remove(tryCatch);
-        }
-    }
-    private static List<AbstractInsnNode> getInstructionsInRange(int start, int end, InsnList il) {
-        List<AbstractInsnNode> instructions = new ArrayList<>();
-        for (int i = start; i < end; i++) {
-            instructions.add(il.get(i));
-        }
-        return instructions;
     }
 
     private ResourcePoolModule getTargetModule(ResourcePool pool, String givenClass) {
@@ -324,23 +307,66 @@ public final class ClassForNamePlugin implements Plugin {
     }
 
     class TryCatchState {
-        Map<AbstractInsnNode, Boolean> transformedCallMap;
+        boolean transformedCFN;
+        boolean notTransformedCFN;
+        void setTransformedCFN() {
+            transformedCFN = true;
+        }
+        void setNotTransformedCFN() {
+            notTransformedCFN = true;
+        }
+        boolean allCallsTransformed() {
+            return transformedCFN && ! notTransformedCFN;
+        }
+    }
 
-        TryCatchState(TryCatchBlockNode node, InsnList il) {
-            transformedCallMap = new HashMap<>();
+    public class ClassAdaptor extends ClassVisitor {
+
+        String owner;
+
+        public ClassAdaptor(ClassWriter cv) {
+            super(Opcodes.ASM9, cv);
         }
 
-        void addCNFCall(AbstractInsnNode insn, boolean isTransformed) {
-            transformedCallMap.put(insn, isTransformed);
+        @Override
+        public void visit(int version, int access, String name, String signature, String superName,
+                          String[] interfaces) {
+            cv.visit(version, access, name, signature, superName, interfaces);
+            owner = name;
         }
+        @Override
+        public MethodVisitor visitMethod(int access, String name, String desc, String signature,
+                                         String[] exceptions) {
+            MethodVisitor mv = cv.visitMethod(access, name, desc, signature, exceptions);
+            return new AdaptingMethodVisitor(owner, access, name, desc, mv);
+        }
+    }
 
-        boolean allCNFCallsTransformed() {
-            for (AbstractInsnNode insn : transformedCallMap.keySet()) {
-                if (! transformedCallMap.get(insn)) {
-                    return false;
+    public class AdaptingMethodVisitor extends MethodVisitor {
+        String owner;
+        MethodVisitor next;
+        public AdaptingMethodVisitor(String owner, int access, String name,
+                                     String desc, MethodVisitor mv) {
+            super(Opcodes.ASM9, new MethodNode(access, name, desc, null, null));
+            this.owner = owner;
+            next = mv;
+        }
+        @Override public void visitEnd() {
+            MethodNode mn = (MethodNode) mv;
+            Analyzer<BasicValue> a = new Analyzer<>(new BasicInterpreter());
+            try {
+                a.analyze(owner, mn);
+            Frame<BasicValue>[] frames = a.getFrames();
+                AbstractInsnNode[] insns = mn.instructions.toArray();
+                for (int i = 0; i < frames.length; ++i) {
+                    if (frames[i] == null && !(insns[i] instanceof LabelNode)) {
+                        mn.instructions.remove(insns[i]);
+                    }
                 }
+            } catch (AnalyzerException e) {
+                // TODO ignore?
             }
-            return true;
+            mn.accept(next);
         }
     }
 
