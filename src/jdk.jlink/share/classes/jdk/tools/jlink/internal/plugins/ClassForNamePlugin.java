@@ -38,11 +38,7 @@ import jdk.internal.org.objectweb.asm.MethodVisitor;
 import jdk.internal.org.objectweb.asm.Opcodes;
 import jdk.internal.org.objectweb.asm.Type;
 import jdk.internal.org.objectweb.asm.tree.*;
-import jdk.internal.org.objectweb.asm.tree.analysis.Analyzer;
-import jdk.internal.org.objectweb.asm.tree.analysis.AnalyzerException;
-import jdk.internal.org.objectweb.asm.tree.analysis.BasicInterpreter;
-import jdk.internal.org.objectweb.asm.tree.analysis.BasicValue;
-import jdk.internal.org.objectweb.asm.tree.analysis.Frame;
+import jdk.tools.jlink.internal.RemoveDeadCodeAdapter;
 import jdk.tools.jlink.internal.PluginRepository;
 import jdk.tools.jlink.plugin.ResourcePool;
 import jdk.tools.jlink.plugin.ResourcePoolBuilder;
@@ -92,24 +88,27 @@ public final class ClassForNamePlugin implements Plugin {
         int tightestStart = -1;
         int tightestEnd = -1;
         for (TryCatchBlockNode tryCatch : handlers.keySet()) {
-            TryCatchState tryCatchState = handlers.get(tryCatch);
-            int currStart = il.indexOf(tryCatch.start);
-            int currEnd = il.indexOf(tryCatch.end);
-            if (currStart <= index && currEnd >= index) {
-                if (tightestHandler == null) {
-                    tightestHandler = tryCatchState;
-                    tightestStart = currStart;
-                    tightestEnd = currEnd;
-                } else {
-                    if (currStart > tightestStart
-                            && currEnd < tightestEnd) {
+            if (tryCatch.type != null && tryCatch.type.equals(CLASS_NOT_FOUND_EXCEPTION)) {
+                TryCatchState tryCatchState = handlers.get(tryCatch);
+                int currStart = il.indexOf(tryCatch.start);
+                int currEnd = il.indexOf(tryCatch.end);
+                if (currStart <= index && currEnd >= index) {
+                    if (tightestHandler == null) {
                         tightestHandler = tryCatchState;
                         tightestStart = currStart;
                         tightestEnd = currEnd;
+                    } else {
+                        if (currStart > tightestStart
+                                && currEnd < tightestEnd) {
+                            tightestHandler = tryCatchState;
+                            tightestStart = currStart;
+                            tightestEnd = currEnd;
+                        }
                     }
                 }
             }
         }
+
         if (tightestHandler != null) {
             if (isTransformed) {
                 tightestHandler.setTransformedCFN();
@@ -224,9 +223,9 @@ public final class ClassForNamePlugin implements Plugin {
             cn.accept(cw);
 
             ClassReader cr2 = new ClassReader(cw.toByteArray());
-            ClassWriter cw2 = new ClassWriter(cr2, ClassWriter.COMPUTE_FRAMES);
+            ClassWriter cw2 = new ClassWriter(cr2, 0);
             ClassAdaptor deadCodeAdaptor = new ClassAdaptor(cw2);
-            cr2.accept(deadCodeAdaptor, SKIP_FRAMES);
+            cr2.accept(deadCodeAdaptor, EXPAND_FRAMES);
 
             return resource.copyWithContent(cw2.toByteArray());
         }
@@ -266,8 +265,7 @@ public final class ClassForNamePlugin implements Plugin {
                 .forEach(resource -> {
                     String path = resource.path();
 
-                    // TODO remove java.base check. In place right now to make debugging easier.
-                    if (path.endsWith(".class") && !path.endsWith("/module-info.class") && ! resource.moduleName().equals("java.base")) {
+                    if (path.endsWith(".class") && !path.endsWith("/module-info.class")) {
                         out.add(transform(resource, in));
                     } else {
                         out.add(resource);
@@ -338,35 +336,7 @@ public final class ClassForNamePlugin implements Plugin {
         public MethodVisitor visitMethod(int access, String name, String desc, String signature,
                                          String[] exceptions) {
             MethodVisitor mv = cv.visitMethod(access, name, desc, signature, exceptions);
-            return new AdaptingMethodVisitor(owner, access, name, desc, mv);
-        }
-    }
-
-    public class AdaptingMethodVisitor extends MethodVisitor {
-        String owner;
-        MethodVisitor next;
-        public AdaptingMethodVisitor(String owner, int access, String name,
-                                     String desc, MethodVisitor mv) {
-            super(Opcodes.ASM9, new MethodNode(access, name, desc, null, null));
-            this.owner = owner;
-            next = mv;
-        }
-        @Override public void visitEnd() {
-            MethodNode mn = (MethodNode) mv;
-            Analyzer<BasicValue> a = new Analyzer<>(new BasicInterpreter());
-            try {
-                a.analyze(owner, mn);
-            Frame<BasicValue>[] frames = a.getFrames();
-                AbstractInsnNode[] insns = mn.instructions.toArray();
-                for (int i = 0; i < frames.length; ++i) {
-                    if (frames[i] == null && !(insns[i] instanceof LabelNode)) {
-                        mn.instructions.remove(insns[i]);
-                    }
-                }
-            } catch (AnalyzerException e) {
-                // TODO ignore?
-            }
-            mn.accept(next);
+            return new RemoveDeadCodeAdapter(owner, access, name, desc, mv);
         }
     }
 
