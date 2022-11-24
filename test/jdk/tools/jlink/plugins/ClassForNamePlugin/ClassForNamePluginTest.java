@@ -23,15 +23,19 @@
 
 
 import jdk.internal.org.objectweb.asm.ClassReader;
-import jdk.internal.org.objectweb.asm.tree.ClassNode;
-import jdk.internal.org.objectweb.asm.tree.MethodNode;
+import jdk.internal.org.objectweb.asm.ClassWriter;
+import jdk.internal.org.objectweb.asm.MethodVisitor;
+import jdk.internal.org.objectweb.asm.Opcodes;
+import jdk.internal.org.objectweb.asm.tree.*;
 import jdk.test.lib.compiler.CompilerUtils;
 import jdk.test.lib.util.FileUtils;
 import jdk.tools.jlink.internal.ResourcePoolManager;
 import jdk.tools.jlink.internal.plugins.ClassForNamePlugin;
+import jdk.tools.jlink.plugin.ResourcePool;
 import jdk.tools.jlink.plugin.ResourcePoolEntry;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Files;
@@ -42,9 +46,11 @@ import java.util.spi.ToolProvider;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
 
+import static jdk.internal.org.objectweb.asm.Opcodes.*;
 import static jdk.test.lib.Asserts.assertTrue;
 import static jdk.test.lib.process.ProcessTools.executeProcess;
 import static org.testng.Assert.*;
@@ -72,6 +78,7 @@ public class ClassForNamePluginTest {
     private final String CLASS_NOT_FOUND_EXCEPTION = "java/lang/ClassNotFoundException";
     private final String PLUGIN_NAME = "class-for-name";
     private static final String MODULE_NAME = "mymodule";
+    private static final String LDC_FILE_NAME = "LdcClass.class";
     private static final String TEST_SRC = System.getProperty("test.src");
     private static final Path SRC_DIR = Paths.get(TEST_SRC, "src");
     private static final Path MODS_DIR = Paths.get("mods");
@@ -90,8 +97,8 @@ public class ClassForNamePluginTest {
                 "--add-exports", "java.base/jdk.internal.module=" + MODULE_NAME,
                 "--add-exports", "java.base/jdk.internal.org.objectweb.asm=" + MODULE_NAME));
 
-        if (Files.exists(IMAGE)) {
-            FileUtils.deleteFileTreeUnchecked(IMAGE);
+        if (Files.exists(IMAGE) || Files.exists(EXTRACT)) {
+            throw new AssertionError("Directories should have been cleaned up in tear down");
         }
 
         createImage("module", IMAGE, MODULE_NAME);
@@ -104,6 +111,12 @@ public class ClassForNamePluginTest {
                 .getExitValue() == 0);
     }
 
+    @AfterTest
+    public void tearDown() {
+        if (Files.exists(IMAGE)) FileUtils.deleteFileTreeUnchecked(IMAGE);
+        if (Files.exists(EXTRACT)) FileUtils.deleteFileTreeUnchecked(EXTRACT);
+    }
+
     @Test
     public void testRunTransformedClass() throws Throwable {
         Path java = IMAGE.resolve("bin").resolve("java");
@@ -113,6 +126,133 @@ public class ClassForNamePluginTest {
                 .errorTo(System.out)
                 .getExitValue() == 0);
 
+    }
+
+    /**
+     * Verifies the correct ldc string value is carried through the Class.forName transformation
+     * i.e. the ldc string corresponding to the Class.forName call.
+     */
+    @Test
+    public void testCarryingCorrectLdc() throws Throwable, Exception {
+
+        generateClassFile();
+
+        Path path = Paths.get(LDC_FILE_NAME);
+        byte[] arr = Files.readAllBytes(path);
+        ResourcePoolManager resourcesMgr = new ResourcePoolManager();
+        ResourcePoolEntry resource = ResourcePoolEntry.create("/test/" + LDC_FILE_NAME, arr);
+        resourcesMgr.add(resource);
+
+        ClassForNamePlugin plugin = new ClassForNamePlugin();
+        Map<String, String> prop = new HashMap<>();
+        prop.put(plugin.getName(), "global");
+        plugin.configure(prop);
+
+        ResourcePoolManager resultMgr = new ResourcePoolManager();
+        ResourcePool resPool = plugin.transform(resourcesMgr.resourcePool(),
+                resultMgr.resourcePoolBuilder());
+
+        resPool.entries()
+                .forEach(r -> {
+                    byte[] inBytes = r.contentBytes();
+                    ClassReader cr = new ClassReader(inBytes);
+                    ClassNode cn = new ClassNode();
+                    cr.accept(cn, SKIP_FRAMES);
+
+                    for (MethodNode mn : cn.methods) {
+                        if (mn.name.equals("main")) {
+                            for (AbstractInsnNode insn : mn.instructions) {
+                                if (insn instanceof MethodInsnNode) {
+                                    MethodInsnNode methodInsn = (MethodInsnNode) insn;
+                                    if (methodInsn.owner.equals("java/lang/invoke/MethodHandles$Lookup") &&
+                                        methodInsn.name.equals("ensureInitialized") &&
+                                        methodInsn.desc.equals("(Ljava/lang/Class;)Ljava/lang/Class;") &&
+                                        methodInsn.getOpcode() == Opcodes.INVOKEVIRTUAL) {
+
+                                        AbstractInsnNode prev = methodInsn.getPrevious();
+                                        if (prev instanceof LdcInsnNode) {
+                                            LdcInsnNode ldc = (LdcInsnNode) prev;
+
+                                            if (! ldc.cst.toString().equals("LGarbage;")) {
+                                                throw new AssertionError("Propagating incorrect " +
+                                                        "ldc value to transformation");
+                                            }
+                                        } else {
+                                            throw new AssertionError("Instruction prior to " +
+                                                    "MethodHandle.Lookup.ensureInitialized is not a load constant" +
+                                                    "instruction");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+    }
+
+    /**
+     * Generates a class file with the following bytecode in its main method
+     *      ldc "mypackage.ClassForNameTest" // a valid class for the Class.forName operation
+     *      ldc "Garbage" // some garbage string invalid for Class.forName operation
+     *      invokestatic  // Method java/lang/Class.forName:(Ljava/lang/String;)Ljava/lang/Class;
+     */
+    private static void generateClassFile() throws Throwable {
+        ClassWriter cw = new ClassWriter(0);
+        MethodVisitor mv;
+
+        cw.visit(49, ACC_PUBLIC + ACC_SUPER,
+                "LdcClass",
+                null,
+                "java/lang/Object",
+                null);
+
+        cw.visitSource("LdcClass.java", null);
+
+        {
+            mv = cw.visitMethod(ACC_PUBLIC, "<init>", "()V", null, null);
+            mv.visitVarInsn(ALOAD, 0);
+            mv.visitMethodInsn(INVOKESPECIAL,
+                    "java/lang/Object",
+                    "<init>",
+                    "()V");
+            mv.visitInsn(RETURN);
+            mv.visitMaxs(1, 1);
+            mv.visitEnd();
+        }
+
+        {
+            mv = cw.visitMethod(ACC_PUBLIC | ACC_STATIC,
+                    "main",
+                    "([Ljava/lang/String;)V",
+                    null,
+                    new String[] { "java/lang/Exception" });
+
+            mv.visitLdcInsn("mypackage.ClassForNameTest");
+            mv.visitLdcInsn("Garbage");
+            mv.visitMethodInsn(INVOKESTATIC,
+                    "java/lang/Class",
+                    "forName",
+                    "(Ljava/lang/String;)Ljava/lang/Class;",
+                    false);
+            mv.visitInsn(POP);
+            mv.visitInsn(RETURN);
+            mv.visitMaxs(2,2);
+            mv.visitEnd();
+        }
+
+        cw.visitEnd();
+
+        File generated = new File(LDC_FILE_NAME);
+        generated.createNewFile();
+        FileOutputStream os = new FileOutputStream(LDC_FILE_NAME);
+        os.write(cw.toByteArray());
+        os.close();
+
+        assertTrue(executeProcess("javap", "-c", "-verbose",
+                LDC_FILE_NAME)
+                .outputTo(System.out)
+                .errorTo(System.out)
+                .getExitValue() == 0); // For debugging
     }
 
     @Test
