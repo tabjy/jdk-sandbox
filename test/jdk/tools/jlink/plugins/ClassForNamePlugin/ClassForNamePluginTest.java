@@ -25,7 +25,6 @@
 import jdk.internal.org.objectweb.asm.ClassReader;
 import jdk.internal.org.objectweb.asm.ClassWriter;
 import jdk.internal.org.objectweb.asm.MethodVisitor;
-import jdk.internal.org.objectweb.asm.Opcodes;
 import jdk.internal.org.objectweb.asm.tree.*;
 import jdk.test.lib.compiler.CompilerUtils;
 import jdk.test.lib.util.FileUtils;
@@ -34,10 +33,7 @@ import jdk.tools.jlink.internal.plugins.ClassForNamePlugin;
 import jdk.tools.jlink.plugin.ResourcePool;
 import jdk.tools.jlink.plugin.ResourcePoolEntry;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.PrintWriter;
-import java.io.StringWriter;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -159,29 +155,21 @@ public class ClassForNamePluginTest {
                     ClassNode cn = new ClassNode();
                     cr.accept(cn, SKIP_FRAMES);
 
+
                     for (MethodNode mn : cn.methods) {
-                        if (mn.name.equals("main")) {
+                        if (mn.name.equals("test")) {
                             for (AbstractInsnNode insn : mn.instructions) {
                                 if (insn instanceof MethodInsnNode) {
+
                                     MethodInsnNode methodInsn = (MethodInsnNode) insn;
+
                                     if (methodInsn.owner.equals("java/lang/invoke/MethodHandles$Lookup") &&
                                         methodInsn.name.equals("ensureInitialized") &&
                                         methodInsn.desc.equals("(Ljava/lang/Class;)Ljava/lang/Class;") &&
-                                        methodInsn.getOpcode() == Opcodes.INVOKEVIRTUAL) {
+                                        methodInsn.getOpcode() == INVOKEVIRTUAL) {
 
-                                        AbstractInsnNode prev = methodInsn.getPrevious();
-                                        if (prev instanceof LdcInsnNode) {
-                                            LdcInsnNode ldc = (LdcInsnNode) prev;
-
-                                            if (! ldc.cst.toString().equals("LGarbage;")) {
-                                                throw new AssertionError("Propagating incorrect " +
-                                                        "ldc value to transformation");
-                                            }
-                                        } else {
-                                            throw new AssertionError("Instruction prior to " +
-                                                    "MethodHandle.Lookup.ensureInitialized is not a load constant" +
-                                                    "instruction");
-                                        }
+                                        throw new AssertionError("Transformation shouldn't have happened. " +
+                                                "We only known parameter to test at runtime.");
                                     }
                                 }
                             }
@@ -191,10 +179,12 @@ public class ClassForNamePluginTest {
     }
 
     /**
-     * Generates a class file with the following bytecode in its main method
+     * Generates a class file with roughly the following bytecode
+     * test(String s) {
      *      ldc "mypackage.ClassForNameTest" // a valid class for the Class.forName operation
-     *      ldc "Garbage" // some garbage string invalid for Class.forName operation
+     *      aload 0 // loads S
      *      invokestatic  // Method java/lang/Class.forName:(Ljava/lang/String;)Ljava/lang/Class;
+     * }
      */
     private static void generateClassFile() throws Throwable {
         ClassWriter cw = new ClassWriter(0);
@@ -214,7 +204,8 @@ public class ClassForNamePluginTest {
             mv.visitMethodInsn(INVOKESPECIAL,
                     "java/lang/Object",
                     "<init>",
-                    "()V");
+                    "()V",
+                    false);
             mv.visitInsn(RETURN);
             mv.visitMaxs(1, 1);
             mv.visitEnd();
@@ -227,8 +218,27 @@ public class ClassForNamePluginTest {
                     null,
                     new String[] { "java/lang/Exception" });
 
-            mv.visitLdcInsn("mypackage.ClassForNameTest");
             mv.visitLdcInsn("Garbage");
+            mv.visitMethodInsn(INVOKESTATIC,
+                    "LdcClass",
+                    "test",
+                    "(Ljava/lang/String;)V",
+                    false);
+
+            mv.visitInsn(RETURN);
+            mv.visitMaxs(1, 1);
+            mv.visitEnd();
+        }
+
+        {
+            mv = cw.visitMethod(ACC_PUBLIC | ACC_STATIC,
+                    "test",
+                    "(Ljava/lang/String;)V",
+                    null,
+                    new String[] { "java/lang/Exception" });
+
+            mv.visitLdcInsn("mypackage.ClassForNameTest");
+            mv.visitVarInsn(ALOAD, 0);
             mv.visitMethodInsn(INVOKESTATIC,
                     "java/lang/Class",
                     "forName",
@@ -236,8 +246,9 @@ public class ClassForNamePluginTest {
                     false);
             mv.visitInsn(POP);
             mv.visitInsn(RETURN);
-            mv.visitMaxs(2,2);
+            mv.visitMaxs(1, 2);
             mv.visitEnd();
+
         }
 
         cw.visitEnd();
