@@ -24,12 +24,7 @@
  */
 package jdk.tools.jlink.internal.plugins;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 
 import jdk.internal.org.objectweb.asm.ClassReader;
 import jdk.internal.org.objectweb.asm.ClassVisitor;
@@ -139,7 +134,7 @@ public final class ClassForNamePlugin implements Plugin {
         byte[] inBytes = resource.contentBytes();
         ClassReader cr = new ClassReader(inBytes);
         ClassNode cn = new ClassNode();
-        cr.accept(cn, SKIP_FRAMES);
+        cr.accept(cn, 0);
         List<MethodNode> ms = cn.methods;
         boolean modified = false;
         LdcInsnNode ldc = null;
@@ -219,7 +214,7 @@ public final class ClassForNamePlugin implements Plugin {
         }
 
         if (modified) {
-            ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_FRAMES);
+            ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_MAXS);
             cn.accept(cw);
 
             ClassReader cr2 = new ClassReader(cw.toByteArray());

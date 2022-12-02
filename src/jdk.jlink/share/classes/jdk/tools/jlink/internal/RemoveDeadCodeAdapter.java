@@ -34,7 +34,11 @@ import jdk.internal.org.objectweb.asm.Opcodes;
 import jdk.internal.org.objectweb.asm.tree.AbstractInsnNode;
 import jdk.internal.org.objectweb.asm.tree.LabelNode;
 import jdk.internal.org.objectweb.asm.tree.MethodNode;
+import jdk.internal.org.objectweb.asm.tree.TryCatchBlockNode;
 import jdk.internal.org.objectweb.asm.tree.analysis.*;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class RemoveDeadCodeAdapter extends MethodVisitor {
     String owner;
@@ -58,6 +62,33 @@ public class RemoveDeadCodeAdapter extends MethodVisitor {
                     mn.instructions.remove(insns[i]);
                 }
             }
+
+            /* Remove invalid exception table entries */
+            List<TryCatchBlockNode> toRemove = new ArrayList<>();
+            for (TryCatchBlockNode node : mn.tryCatchBlocks) {
+                if (node.start.equals(node.end) ) { 
+                    toRemove.add(node);
+                } else {
+                    /* Remove entries where there is no code in between labels */
+                    AbstractInsnNode curr = node.start;
+                    boolean keep = false;
+                    while (curr != node.end) {
+                        if (! (curr instanceof LabelNode)) {
+                            keep = true;
+                            break;
+                        }
+                        curr = curr.getNext();
+                    }
+                    if (! keep ) {
+                        toRemove.add(node);
+                    }
+                }
+            }
+            for (TryCatchBlockNode r : toRemove) {
+                mn.tryCatchBlocks.remove(r);
+            }
+
+
         } catch (AnalyzerException e) {
         }
         mn.accept(next);
