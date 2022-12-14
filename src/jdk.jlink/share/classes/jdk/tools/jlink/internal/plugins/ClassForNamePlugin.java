@@ -33,8 +33,14 @@ import jdk.internal.org.objectweb.asm.MethodVisitor;
 import jdk.internal.org.objectweb.asm.Opcodes;
 import jdk.internal.org.objectweb.asm.Type;
 import jdk.internal.org.objectweb.asm.tree.*;
+import jdk.internal.org.objectweb.asm.tree.analysis.Analyzer;
+import jdk.internal.org.objectweb.asm.tree.analysis.AnalyzerException;
+import jdk.internal.org.objectweb.asm.tree.analysis.BasicValue;
+import jdk.internal.org.objectweb.asm.tree.analysis.Frame;
+import jdk.tools.jlink.internal.LdcInterpreter;
 import jdk.tools.jlink.internal.RemoveDeadCodeAdapter;
 import jdk.tools.jlink.internal.PluginRepository;
+import jdk.tools.jlink.internal.StringValue;
 import jdk.tools.jlink.plugin.ResourcePool;
 import jdk.tools.jlink.plugin.ResourcePoolBuilder;
 import jdk.tools.jlink.plugin.ResourcePoolModule;
@@ -137,78 +143,90 @@ public final class ClassForNamePlugin implements Plugin {
         cr.accept(cn, 0);
         List<MethodNode> ms = cn.methods;
         boolean modified = false;
-        LdcInsnNode ldc = null;
+        LdcInsnNode ldc;
         String thisPackage = getPackage(binaryClassName(resource.path()));
 
         for (MethodNode mn : ms) {
-            InsnList il = mn.instructions;
-            Iterator<AbstractInsnNode> it = il.iterator();
+            Analyzer<BasicValue> analyzer = new Analyzer<>(new LdcInterpreter());
+            try {
+                analyzer.analyze(cn.name, mn);
+            } catch (AnalyzerException e) {
+                throw new RuntimeException(e);
+            }
 
+            InsnList il = mn.instructions;
             /* Map of exception handlers and their covered ranges */
             Map<TryCatchBlockNode, TryCatchState> handlers = new HashMap<>();
             for (TryCatchBlockNode tryCatch : mn.tryCatchBlocks) {
                 handlers.put(tryCatch, new TryCatchState());
             }
 
-            while (it.hasNext()) {
-                AbstractInsnNode insn = it.next();
-
-                if (insn instanceof LdcInsnNode) {
-                    ldc = (LdcInsnNode)insn;
-                } else if (insn instanceof MethodInsnNode && ldc != null) {
+            int i = 0, j = 0;
+            Frame<BasicValue>[] frames = analyzer.getFrames();
+            int frameLength = frames.length;
+            while (i < frameLength) {
+                AbstractInsnNode insn = il.get(i);
+                if (insn instanceof MethodInsnNode ) {
                     MethodInsnNode min = (MethodInsnNode)insn;
-
                     if (min.getOpcode() == Opcodes.INVOKESTATIC &&
                             min.name.equals("forName") &&
                             min.owner.equals("java/lang/Class") &&
                             min.desc.equals("(Ljava/lang/String;)Ljava/lang/Class;")) {
                         boolean isTransformed = false;
                         int callIndex = il.indexOf(insn);
-                        String ldcClassName = ldc.cst.toString();
-                        String thatClassName = ldcClassName.replaceAll("\\.", "/");
+                        BasicValue arg;
+                        try {
+                             arg = getStackValue(j, 0, analyzer.getFrames());
+                        } catch (AnalyzerException e) {
+                            throw new RuntimeException(e);
+                        }
+                        if (arg instanceof StringValue && ((StringValue) arg).getContents() != null) {
+                            ldc = ((StringValue) arg).getLdcNode();
+                            String thatClassName = ((StringValue) arg).getContents().replaceAll("\\.", "/");
 
-                        if (isGlobalTransformation) {
-                            /* Blindly transform bytecode */
-                            modifyInstructions(ldc, il, min, thatClassName);
-                            modified = true;
-                            isTransformed = true;
-                        } else {
-                            /* Transform calls for classes within the same module */
-                            Optional<ResourcePoolEntry> thatClass =
-                                    pool.findEntryInContext(thatClassName + ".class", resource);
-
-                            if (thatClass.isPresent()) {
-                                int thatAccess = getAccess(thatClass.get());
-                                String thatPackage = getPackage(thatClassName);
-
-                                if ((thatAccess & Opcodes.ACC_PRIVATE) != Opcodes.ACC_PRIVATE &&
-                                        ((thatAccess & Opcodes.ACC_PUBLIC) == Opcodes.ACC_PUBLIC ||
-                                                thisPackage.equals(thatPackage))) {
-                                    modifyInstructions(ldc, il, min, thatClassName);
-                                    modified = true;
-                                    isTransformed = true;
-
-                                }
+                            if (isGlobalTransformation) {
+                                /* Blindly transform bytecode */
+                                modifyInstructions(ldc, il, min, thatClassName);
+                                modified = true;
+                                isTransformed = true;
+                                j--;
                             } else {
-                                /* Check module graph to see if class is accessible */
-                                ResourcePoolModule targetModule = getTargetModule(pool, thatClassName);
-                                if (targetModule != null
-                                        && ModuleGraphPlugin.isAccessible(thatClassName,
-                                        resource.moduleName(), targetModule.name())) {
-                                    modifyInstructions(ldc, il, min, thatClassName);
-                                    modified = true;
-                                    isTransformed = true;
+                                /* Transform calls for classes within the same module */
+                                Optional<ResourcePoolEntry> thatClass =
+                                        pool.findEntryInContext(thatClassName + ".class", resource);
+
+                                if (thatClass.isPresent()) {
+                                    int thatAccess = getAccess(thatClass.get());
+                                    String thatPackage = getPackage(thatClassName);
+
+                                    if ((thatAccess & Opcodes.ACC_PRIVATE) != Opcodes.ACC_PRIVATE &&
+                                            ((thatAccess & Opcodes.ACC_PUBLIC) == Opcodes.ACC_PUBLIC ||
+                                                    thisPackage.equals(thatPackage))) {
+                                        modifyInstructions(ldc, il, min, thatClassName);
+                                        modified = true;
+                                        isTransformed = true;
+                                        j--;
+                                    }
+                                } else {
+                                    /* Check module graph to see if class is accessible */
+                                    ResourcePoolModule targetModule = getTargetModule(pool, thatClassName);
+                                    if (targetModule != null
+                                            && ModuleGraphPlugin.isAccessible(thatClassName,
+                                            resource.moduleName(), targetModule.name())) {
+                                        modifyInstructions(ldc, il, min, thatClassName);
+                                        modified = true;
+                                        isTransformed = true;
+                                        j--;
+                                    }
                                 }
                             }
+                            updateHandlerMap(callIndex, handlers, isTransformed, il);
                         }
-                        updateHandlerMap(callIndex, handlers, isTransformed, il);
                     }
-                    ldc = null;
-                } else if (!(insn instanceof LabelNode) &&
-                        !(insn instanceof LineNumberNode)) {
-                    ldc = null;
                 }
-
+                j++;
+                i++;
+                frameLength = analyzer.getFrames().length;
             }
             removeUnreachableExceptionHandlers(handlers, mn);
         }
@@ -226,6 +244,15 @@ public final class ClassForNamePlugin implements Plugin {
         }
 
         return resource;
+    }
+
+    private BasicValue getStackValue(int instructionIndex, int frameIndex, Frame<BasicValue>[] frames) throws AnalyzerException {
+        Frame<BasicValue> f = frames[instructionIndex];
+        if (f == null) {
+            return null;
+        }
+        int top = f.getStackSize() - 1;
+        return frameIndex <= top ? f.getStack(top - frameIndex) : null;
     }
 
     private static void removeUnreachableExceptionHandlers(Map<TryCatchBlockNode, TryCatchState> handlers, MethodNode mn) {

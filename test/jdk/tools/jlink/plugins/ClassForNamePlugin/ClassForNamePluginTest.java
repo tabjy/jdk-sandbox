@@ -25,6 +25,7 @@
 import jdk.internal.org.objectweb.asm.ClassReader;
 import jdk.internal.org.objectweb.asm.ClassWriter;
 import jdk.internal.org.objectweb.asm.MethodVisitor;
+import jdk.internal.org.objectweb.asm.Opcodes;
 import jdk.internal.org.objectweb.asm.tree.*;
 import jdk.test.lib.compiler.CompilerUtils;
 import jdk.test.lib.util.FileUtils;
@@ -162,14 +163,13 @@ public class ClassForNamePluginTest {
                                 if (insn instanceof MethodInsnNode) {
 
                                     MethodInsnNode methodInsn = (MethodInsnNode) insn;
+                                    if (methodInsn.owner.equals("java/lang/Class") &&
+                                        methodInsn.name.equals("forName") &&
+                                        methodInsn.desc.equals("(Ljava/lang/String;)Ljava/lang/Class;") &&
+                                        methodInsn.getOpcode() == INVOKESTATIC) {
 
-                                    if (methodInsn.owner.equals("java/lang/invoke/MethodHandles$Lookup") &&
-                                        methodInsn.name.equals("ensureInitialized") &&
-                                        methodInsn.desc.equals("(Ljava/lang/Class;)Ljava/lang/Class;") &&
-                                        methodInsn.getOpcode() == INVOKEVIRTUAL) {
-
-                                        throw new AssertionError("Transformation shouldn't have happened. " +
-                                                "We only known parameter to test at runtime.");
+                                        throw new AssertionError("Failed to transform Class.forName call" +
+                                                "despite existing data flow analysis.");
                                     }
                                 }
                             }
@@ -183,6 +183,7 @@ public class ClassForNamePluginTest {
      * test(String s) {
      *      ldc "mypackage.ClassForNameTest" // a valid class for the Class.forName operation
      *      aload 0 // loads S
+     *      pop
      *      invokestatic  // Method java/lang/Class.forName:(Ljava/lang/String;)Ljava/lang/Class;
      * }
      */
@@ -239,6 +240,7 @@ public class ClassForNamePluginTest {
 
             mv.visitLdcInsn("mypackage.ClassForNameTest");
             mv.visitVarInsn(ALOAD, 0);
+            mv.visitInsn(POP);
             mv.visitMethodInsn(INVOKESTATIC,
                     "java/lang/Class",
                     "forName",
@@ -246,7 +248,7 @@ public class ClassForNamePluginTest {
                     false);
             mv.visitInsn(POP);
             mv.visitInsn(RETURN);
-            mv.visitMaxs(1, 2);
+            mv.visitMaxs(2, 2);
             mv.visitEnd();
 
         }
@@ -388,8 +390,8 @@ public class ClassForNamePluginTest {
     }
 
     private void nestedAllFinallyCallsTransformedTest(MethodNode mn) {
-        assert(mn.tryCatchBlocks.size() == 3) : "Exceptions for nested try catch finally calls were not removed." +
-                expectedVsActualMessage(3, mn.tryCatchBlocks.size());
+        assert(mn.tryCatchBlocks.size() == 2) : "Exceptions for nested try catch finally calls were not removed." +
+                expectedVsActualMessage(2, mn.tryCatchBlocks.size());
     }
 
     private void nestedSomeCallsTransformedTest(MethodNode mn) {
