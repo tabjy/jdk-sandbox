@@ -3,6 +3,10 @@ package jdk.tools.jlink.internal.plugins;
 import com.sun.tools.jdeps.JdepsConfiguration;
 import com.sun.tools.jdeps.ModuleInfoBuilder;
 import jdk.internal.opt.CommandLine;
+import jdk.internal.org.objectweb.asm.ClassWriter;
+import jdk.internal.org.objectweb.asm.ModuleVisitor;
+import jdk.internal.org.objectweb.asm.Opcodes;
+import jdk.tools.jlink.internal.Archive;
 import jdk.tools.jlink.plugin.ResourcePool;
 import jdk.tools.jlink.plugin.ResourcePoolBuilder;
 
@@ -105,7 +109,8 @@ public class ClassPathPlugin extends AbstractPlugin {
                 .ifPresent(v -> version[0] = Runtime.Version.parse(v.toString()));
 
         JdepsConfiguration.Builder builder = new JdepsConfiguration.Builder()
-                .appModulePath(String.join(File.pathSeparator, modulePath.stream().map(Path::toString).toArray(String[]::new)))
+                .appModulePath(
+                        String.join(File.pathSeparator, modulePath.stream().map(Path::toString).toArray(String[]::new)))
                 .multiRelease(version[0]);
 
         for (Path p : classPath) {
@@ -120,6 +125,8 @@ public class ClassPathPlugin extends AbstractPlugin {
         //   1. load resources from class path
         //   2. generate and compile a module-info.class
         //   3. add resources and module-info to resource pool
+
+        // generator module descriptors with jdeps
         List<ModuleDescriptor> descriptors;
         try (JdepsConfiguration config = builder.build()) {
             Path tmp = Files.createTempDirectory("jlink-class-path-plugin-tmp");
@@ -137,15 +144,106 @@ public class ClassPathPlugin extends AbstractPlugin {
 
         // TODO: verify classpath and descriptors are one-to-one mappings and the order is the same
 
+        List<Archive> archives = new ArrayList<>();
+
+//        descriptors.forEach(...);
 
         in.transformAndCopy(Function.identity(), out);
+
 
 //        out.add(ResourcePoolEntryFactory.create());
 
         return out.build();
     }
 
+    private void stripNonExistingProvideClauses(ModuleDescriptor descriptor) {
+
+    }
+
     private byte[] compileModuleInfo(ModuleDescriptor descriptor) {
-        return null;
+        ClassWriter cw = new ClassWriter(0);
+        cw.visit(Opcodes.V19, Opcodes.ACC_MODULE, "module-info", null, null, null);
+
+        // TODO: might as well include the source, too?
+
+        ModuleVisitor mv = cw.visitModule(descriptor.name(), 0, null);
+
+        for (ModuleDescriptor.Requires require : descriptor.requires()) {
+            mv.visitRequire(require.name(),
+                    require.name().equals(JAVA_BASE_MOD)
+                            ? Opcodes.ACC_MANDATED
+                            : requireModifiersToMask(require.modifiers()),
+                    require.rawCompiledVersion().orElse(null));
+        }
+
+        for (ModuleDescriptor.Exports export : descriptor.exports()) {
+            mv.visitExport(classToInternalName(export.source()),
+                    exportModifiersToMask(export.modifiers()),
+                    export.targets().stream().map(this::classToInternalName).toArray(String[]::new));
+        }
+
+        for (ModuleDescriptor.Opens open : descriptor.opens()) {
+            mv.visitOpen(open.source(),
+                    openModifiersToMask(open.modifiers()),
+                    open.targets().stream().map(this::classToInternalName).toArray(String[]::new));
+        }
+
+        for (String use : descriptor.uses()) {
+            mv.visitUse(classToInternalName(use));
+        }
+
+        for (ModuleDescriptor.Provides provide : descriptor.provides()) {
+            mv.visitProvide(classToInternalName(provide.service()),
+                    provide.providers().stream().map(this::classToInternalName).toArray(String[]::new));
+        }
+        mv.visitEnd();
+
+        // TODO: Do we need to generate InnerClasses attribute?
+        // cw.visitInnerClass(...);
+
+        cw.visitEnd();
+        return cw.toByteArray();
+    }
+
+    private int requireModifiersToMask(Set<ModuleDescriptor.Requires.Modifier> modifiers) {
+        int mask = 0;
+        for (ModuleDescriptor.Requires.Modifier modifier : modifiers) {
+            switch (modifier) {
+                case TRANSITIVE -> mask |= Opcodes.ACC_TRANSITIVE;
+                case STATIC -> mask |= Opcodes.ACC_STATIC_PHASE;
+                case SYNTHETIC -> mask |= Opcodes.ACC_SYNTHETIC;
+                case MANDATED -> mask |= Opcodes.ACC_MANDATED;
+                default -> throw new AssertionError("Unknown modifier: " + modifier);
+            }
+        }
+        return mask;
+    }
+
+    private int exportModifiersToMask(Set<ModuleDescriptor.Exports.Modifier> modifiers) {
+        int mask = 0;
+        for (ModuleDescriptor.Exports.Modifier modifier : modifiers) {
+            switch (modifier) {
+                case SYNTHETIC -> mask |= Opcodes.ACC_SYNTHETIC;
+                case MANDATED -> mask |= Opcodes.ACC_MANDATED;
+                default -> throw new AssertionError("Unknown modifier: " + modifier);
+            }
+        }
+        return mask;
+    }
+
+    private int openModifiersToMask(Set<ModuleDescriptor.Opens.Modifier> modifiers) {
+        int mask = 0;
+        for (ModuleDescriptor.Opens.Modifier modifier : modifiers) {
+            switch (modifier) {
+                case SYNTHETIC -> mask |= Opcodes.ACC_SYNTHETIC;
+                case MANDATED -> mask |= Opcodes.ACC_MANDATED;
+                default -> throw new AssertionError("Unknown modifier: " + modifier);
+            }
+        }
+        return mask;
+    }
+
+    private String classToInternalName(String className) {
+        return className.replace('.', '/');
     }
 }
