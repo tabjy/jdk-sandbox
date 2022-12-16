@@ -62,6 +62,7 @@ module jdk.jdeps {
     requires jdk.compiler;
 
     exports com.sun.tools.classfile to jdk.jlink;
+    exports com.sun.tools.jdeps to jdk.jlink;
 
     provides java.util.spi.ToolProvider with
         com.sun.tools.javap.Main.JavapToolProvider,
