@@ -13,9 +13,12 @@ import jdk.internal.org.objectweb.asm.tree.ClassNode;
 import jdk.internal.org.objectweb.asm.tree.LdcInsnNode;
 import jdk.internal.org.objectweb.asm.tree.MethodInsnNode;
 import jdk.tools.jlink.internal.Archive;
+import jdk.tools.jlink.internal.JlinkTask;
 import jdk.tools.jlink.internal.ModularJarArchive;
+import jdk.tools.jlink.internal.ResourcePoolEntryFactory;
 import jdk.tools.jlink.plugin.ResourcePool;
 import jdk.tools.jlink.plugin.ResourcePoolBuilder;
+import jdk.tools.jlink.plugin.ResourcePoolEntry;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -23,6 +26,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.lang.module.ModuleDescriptor;
+import java.lang.module.ModuleFinder;
+import java.lang.module.ModuleReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,6 +41,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class ClassPathPlugin extends AbstractPlugin {
     private static final String NAME = "class-path";
@@ -162,29 +168,86 @@ public class ClassPathPlugin extends AbstractPlugin {
 
         // TODO: verify classpath and descriptors are one-to-one mappings and the order is the same
         List<Archive> archives = new ArrayList<>();
+        List<PatchedModuleDirectives> directives = new ArrayList<>();
         for (int i = 0; i < descriptors.size(); i++) {
             ModuleDescriptor descriptor = descriptors.get(i);
             Path path = classPath.get(i);
             ModularJarArchive archive = new ModularJarArchive(descriptor.name(), path, version[0]);
 
-            PatchedModuleDirectives directives = new PatchedModuleDirectives(descriptor);
+            PatchedModuleDirectives directive = new PatchedModuleDirectives(descriptor);
             stripNonExistingProvideClauses(descriptor, archive);
-            addUseClauses(directives, archive);
+            addUseClauses(directive, archive);
 
             archives.add(archive);
+            directives.add(directive);
         }
 
         in.transformAndCopy(Function.identity(), out);
 
-        // TODO: add generated module resources to pool
-//        out.add(...);
+        Set<String> roots = new HashSet<>();
 
+        // TODO: add generated module resources to pool
+        for (int i = 0; i < descriptors.size(); i++) {
+            ModuleDescriptor descriptor = descriptors.get(i);
+            Archive archive = archives.get(i);
+            PatchedModuleDirectives directive = directives.get(i);
+
+            // FIXME: reduce memory footprint by not loading all resources into memory
+            //        expose ArchiveEntryResourcePoolEntry as public or add the corresponding factory method?
+
+            archive.entries().forEach(entry -> {
+                try (InputStream is = entry.stream()) {
+                    out.add(ResourcePoolEntryFactory.create(
+                            "/" + descriptor.name() + "/" + entry.name(),
+                            ResourcePoolEntry.Type.CLASS_OR_RESOURCE,
+                            is.readAllBytes()));
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
+
+            // FIXME: generated module might include (possibly transitive) dependency modules not already in the module
+            //        view
+            directive.requires().stream()
+                    .map(ModuleDescriptor.Requires::name)
+                    .filter(roots::contains)
+                    .filter(name -> in.moduleView().findModule(name).isEmpty())
+                    .filter(name -> descriptors.stream().noneMatch(d -> d.name().equals(name)))
+                    .forEach(roots::add);
+
+            byte[] moduleInfo = compileModuleInfo(descriptor, directive);
+            out.add(ResourcePoolEntryFactory.create(
+                    "/" + descriptor.name() + "/module-info.class",
+                    ResourcePoolEntry.Type.CLASS_OR_RESOURCE,
+                    moduleInfo));
+        }
+
+        ModuleFinder finder = JlinkTask.newModuleFinder(modulePath, Set.of(), roots);
+        finder.findAll().stream().flatMap(reference -> {
+            try (ModuleReader reader = reference.open()) {
+                reader.list().forEach(path -> {
+                    try (InputStream is = reader.open(path).orElseThrow()) {
+                        // FIXME: avoid loading all resources into memory, reader.open(path) is not designed for loading
+                        //        small resources like classes
+                        out.add(ResourcePoolEntryFactory.create(
+                                "/" + reference.descriptor().name() + "/" + path,
+                                ResourcePoolEntry.Type.CLASS_OR_RESOURCE,
+                                is.readAllBytes()));
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            return null;
+        });
 
         return out.build();
     }
 
     // TODO: is this even necessary if descriptors are not generated with javac?
-    //       a non-existent SPI could be available in another module
+    //       a non-existent SPI at compile time could be available in another module at run time
     private void stripNonExistingProvideClauses(ModuleDescriptor descriptor, ModularJarArchive archive) {
 
     }
@@ -209,35 +272,29 @@ public class ClassPathPlugin extends AbstractPlugin {
                         lastTwoInstructions[i[0]++ % 2] = instruction;
 
                         // FIXME: Argument could be already on stack. How to do data-flow analysis properly?
-                        if (instruction instanceof MethodInsnNode invocation) {
+                        if (instruction instanceof MethodInsnNode invocation
+                                && invocation.getOpcode() == Opcodes.INVOKESTATIC
+                                && invocation.name.equals("load")
+                                && invocation.owner.equals("java/util/ServiceLoader")) {
                             // one argument variant: ServiceLoader.load(Class):ServiceLoader
-                            if (invocation.getOpcode() == Opcodes.INVOKESTATIC
-                                    && invocation.name.equals("load")
-                                    && invocation.owner.equals("java/util/ServiceLoader")
-                                    && invocation.desc.equals("(Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
+                            if (invocation.desc.equals("(Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
                                 if (lastTwoInstructions[0] instanceof LdcInsnNode ldc) {
                                     if (ldc.cst instanceof Type type) {
                                         if (type.getSort() == Type.OBJECT) {
-//                                            System.out.println("uses " + type.getClassName());
-                                            try {
-                                                directives.uses().add(type.getClassName());
-                                            } catch (Exception e) {
-                                                e.printStackTrace();
-                                            }
+                                            directives.uses().add(type.getClassName());
+                                            return;
                                         }
                                     }
                                 }
                             }
 
                             // two argument variant: ServiceLoader.load(Class, ClassLoader):ServiceLoader
-                            if (invocation.getOpcode() == Opcodes.INVOKESTATIC
-                                    && invocation.name.equals("load")
-                                    && invocation.owner.equals("java/util/ServiceLoader")
-                                    && invocation.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
-                                // TODO: the loading classloader argument to stack might be non-trivial like LDC
+                            if (invocation.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
+                                // TODO: the loading classloader argument to stack might be non-trivial, unlike LDC
                             }
 
                             // We don't care about loading services with ModuleLayer. Legacy code don't use it anyway.
+//                            System.err.println("Unknown ServiceLoader.load() invocation in: " + cn.name + "." + method.name + method.desc);
                             return;
                         }
 
