@@ -41,7 +41,6 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 public class ClassPathPlugin extends AbstractPlugin {
     private static final String NAME = "class-path";
@@ -120,6 +119,15 @@ public class ClassPathPlugin extends AbstractPlugin {
             }
         } catch (NoSuchElementException | IOException e) {
             // ignore
+        }
+
+        Path jmods = Paths.get(System.getProperty("java.home"), "jmods");
+        if (modulePath.isEmpty() && jmods.toFile().isDirectory()) {
+            modulePath.add(jmods);
+        }
+
+        if (modulePath.isEmpty()) {
+            throw new IllegalArgumentException("Module path is not set");
         }
     }
 
@@ -210,7 +218,7 @@ public class ClassPathPlugin extends AbstractPlugin {
             //        view
             directive.requires().stream()
                     .map(ModuleDescriptor.Requires::name)
-                    .filter(roots::contains)
+//                    .filter(name -> !roots.contains(name))
                     .filter(name -> in.moduleView().findModule(name).isEmpty())
                     .filter(name -> descriptors.stream().noneMatch(d -> d.name().equals(name)))
                     .forEach(roots::add);
@@ -295,7 +303,6 @@ public class ClassPathPlugin extends AbstractPlugin {
 
                             // We don't care about loading services with ModuleLayer. Legacy code don't use it anyway.
 //                            System.err.println("Unknown ServiceLoader.load() invocation in: " + cn.name + "." + method.name + method.desc);
-                            return;
                         }
 
 
