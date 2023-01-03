@@ -2,6 +2,7 @@ package jdk.tools.jlink.internal.plugins;
 
 import com.sun.tools.jdeps.JdepsConfiguration;
 import com.sun.tools.jdeps.ModuleInfoBuilder;
+import jdk.internal.access.SharedSecrets;
 import jdk.internal.opt.CommandLine;
 import jdk.internal.org.objectweb.asm.ClassReader;
 import jdk.internal.org.objectweb.asm.ClassWriter;
@@ -36,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -183,7 +185,7 @@ public class ClassPathPlugin extends AbstractPlugin {
             ModularJarArchive archive = new ModularJarArchive(descriptor.name(), path, version[0]);
 
             PatchedModuleDirectives directive = new PatchedModuleDirectives(descriptor);
-            stripNonExistingProvideDirectives(descriptor, archive);
+            stripNonExistingProvideDirectives(directive, archive);
             addUseDirectives(directive, archive);
 
             archives.add(archive);
@@ -254,10 +256,33 @@ public class ClassPathPlugin extends AbstractPlugin {
         return out.build();
     }
 
-    // TODO: is this even necessary if descriptors are not generated with javac?
-    //       a non-existent SPI at compile time could be available in another module at run time
-    private void stripNonExistingProvideDirectives(ModuleDescriptor descriptor, ModularJarArchive archive) {
+    private void stripNonExistingProvideDirectives(PatchedModuleDirectives directives, ModularJarArchive archive) {
+        Set<ModuleDescriptor.Provides> newProvides = new HashSet<>();
 
+        for (Iterator<ModuleDescriptor.Provides> it = directives.provides().iterator(); it.hasNext(); ) {
+            ModuleDescriptor.Provides provides = it.next();
+
+            if (archive.entries().noneMatch(entry ->
+                    entry.name().equals(classToInternalName(provides.service()) + ".class"))) {
+                it.remove();
+                continue;
+            }
+
+            List<String> newProviders = provides.providers().stream()
+                    .filter(provider -> archive.entries().anyMatch(entry ->
+                            entry.name().equals(classToInternalName(provider) + ".class")))
+                    .toList();
+
+            if (newProviders.size() != provides.providers().size()) {
+                newProvides.add(SharedSecrets.getJavaLangModuleAccess().newProvides(
+                        provides.service(), List.copyOf(newProviders)));
+                it.remove();
+            }
+        }
+
+        for (ModuleDescriptor.Provides provides : newProvides) {
+            directives.addProvides(provides);
+        }
     }
 
     private void addUseDirectives(PatchedModuleDirectives directives, ModularJarArchive archive) {
