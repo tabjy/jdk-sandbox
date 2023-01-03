@@ -183,8 +183,8 @@ public class ClassPathPlugin extends AbstractPlugin {
             ModularJarArchive archive = new ModularJarArchive(descriptor.name(), path, version[0]);
 
             PatchedModuleDirectives directive = new PatchedModuleDirectives(descriptor);
-            stripNonExistingProvideClauses(descriptor, archive);
-            addUseClauses(directive, archive);
+            stripNonExistingProvideDirectives(descriptor, archive);
+            addUseDirectives(directive, archive);
 
             archives.add(archive);
             directives.add(directive);
@@ -256,11 +256,11 @@ public class ClassPathPlugin extends AbstractPlugin {
 
     // TODO: is this even necessary if descriptors are not generated with javac?
     //       a non-existent SPI at compile time could be available in another module at run time
-    private void stripNonExistingProvideClauses(ModuleDescriptor descriptor, ModularJarArchive archive) {
+    private void stripNonExistingProvideDirectives(ModuleDescriptor descriptor, ModularJarArchive archive) {
 
     }
 
-    private void addUseClauses(PatchedModuleDirectives directives, ModularJarArchive archive) {
+    private void addUseDirectives(PatchedModuleDirectives directives, ModularJarArchive archive) {
         // Scan for ServiceLoader.load() calls
         archive.entries().forEach(entry -> {
             if (entry.type() != Archive.Entry.EntryType.CLASS_OR_RESOURCE || !entry.name().endsWith(CLASS_EXT)) {
