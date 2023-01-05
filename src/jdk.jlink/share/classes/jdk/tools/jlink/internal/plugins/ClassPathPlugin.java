@@ -5,10 +5,14 @@ import com.sun.tools.jdeps.ModuleInfoBuilder;
 import jdk.internal.access.SharedSecrets;
 import jdk.internal.opt.CommandLine;
 import jdk.internal.org.objectweb.asm.ClassReader;
+import jdk.internal.org.objectweb.asm.ClassVisitor;
 import jdk.internal.org.objectweb.asm.ClassWriter;
+import jdk.internal.org.objectweb.asm.Label;
+import jdk.internal.org.objectweb.asm.MethodVisitor;
 import jdk.internal.org.objectweb.asm.ModuleVisitor;
 import jdk.internal.org.objectweb.asm.Opcodes;
 import jdk.internal.org.objectweb.asm.Type;
+import jdk.internal.org.objectweb.asm.commons.AdviceAdapter;
 import jdk.internal.org.objectweb.asm.tree.AbstractInsnNode;
 import jdk.internal.org.objectweb.asm.tree.ClassNode;
 import jdk.internal.org.objectweb.asm.tree.LdcInsnNode;
@@ -42,7 +46,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
-import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class ClassPathPlugin extends AbstractPlugin {
     private static final String NAME = "class-path";
@@ -192,7 +196,17 @@ public class ClassPathPlugin extends AbstractPlugin {
             directives.add(directive);
         }
 
-        in.transformAndCopy(Function.identity(), out);
+        // TODO: clean this up
+        byte[][] moduleClassBytes = new byte[1][];
+        in.entries().forEach(entry -> {
+            if (entry.moduleName().equals("java.base") && entry.path().equals("/java.base/java/lang/Module.class")) {
+//                moduleClassEntry[0] = entry;
+                moduleClassBytes[0] = entry.contentBytes();
+                return;
+            }
+
+            out.add(entry);
+        });
 
         Set<String> roots = new HashSet<>();
 
@@ -237,6 +251,12 @@ public class ClassPathPlugin extends AbstractPlugin {
             try (ModuleReader reader = reference.open()) {
                 reader.list().forEach(path -> {
                     try (InputStream is = reader.open(path).orElseThrow()) {
+                        // TODO: clean this up
+                        if (reference.descriptor().name().equals("java.base") && path.equals("java/lang/Module.class")) {
+                            moduleClassBytes[0] = is.readAllBytes();
+                            return;
+                        }
+
                         // FIXME: avoid loading all resources into memory, reader.open(path) is not designed for loading
                         //        small resources like classes
                         out.add(ResourcePoolEntryFactory.create(
@@ -253,7 +273,115 @@ public class ClassPathPlugin extends AbstractPlugin {
             return null;
         });
 
+//        in.transformAndCopy(entry -> {
+//            if (entry.moduleName().equals("java.base") && entry.path().equals("java/lang/Module.class")) {
+//                try (InputStream is = entry.stream()) {
+//                return ResourcePoolEntryFactory.create(
+//                        "/java.base/java/lang/Module.class",
+//                        ResourcePoolEntry.Type.CLASS_OR_RESOURCE,
+//                        transformModuleClass(entry));
+//            }
+//
+//            return entry;
+//        }, out);
+
+
+        if (moduleClassBytes[0] != null) {
+            out.add(ResourcePoolEntryFactory.create(
+                    "/java.base/java/lang/Module.class",
+                    ResourcePoolEntry.Type.CLASS_OR_RESOURCE,
+                    transformModuleClass(
+                            moduleClassBytes[0],
+                            descriptors.stream().map(ModuleDescriptor::name).collect(Collectors.toSet()))));
+        }
+
         return out.build();
+    }
+
+    private byte[] transformModuleClass(byte[] classFile, Set<String> moduleNames) {
+        ClassReader reader = new ClassReader(classFile);
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+
+        boolean[] moduleNameFieldGenerated = new boolean[]{false};
+        ClassVisitor visitor = new ClassVisitor(Opcodes.ASM9, writer) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                MethodVisitor mv = super.visitMethod(access, name, descriptor, signature, exceptions);
+
+                if (name.equals("<clinit>") && descriptor.equals("()V")) {
+                    moduleNameFieldGenerated[0] = true;
+
+                    visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                            "_JLINK_CONVERTED_MODULES", "Ljava/util/Set;", null, null);
+                    return new AdviceAdapter(Opcodes.ASM9, mv, access, name, descriptor) {
+                        @Override
+                        protected void onMethodExit(int opcode) {
+                            initializeModuleNameField(mv, moduleNames);
+                            super.onMethodExit(opcode);
+                        }
+                    };
+                }
+
+                if (name.equals("canUse") && descriptor.equals("(Ljava/lang/Class;)Z")) {
+                    return new AdviceAdapter(Opcodes.ASM9, mv, access, name, descriptor) {
+                        @Override
+                        protected void onMethodEnter() {
+                            mv.visitFieldInsn(GETSTATIC, "java/lang/Module", "_JLINK_CONVERTED_MODULES",
+                                    "Ljava/util/Set;");
+                            mv.visitVarInsn(ALOAD, 0);
+                            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Module", "getDescriptor",
+                                    "()Ljava/lang/module/ModuleDescriptor;", false);
+                            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/module/ModuleDescriptor", "name",
+                                    "()Ljava/lang/String;", false);
+                            mv.visitMethodInsn(INVOKEINTERFACE, "java/util/Set", "contains",
+                                    "(Ljava/lang/Object;)Z", true);
+
+                            Label label = new Label();
+                            mv.visitJumpInsn(IFEQ, label);
+                            mv.visitInsn(ICONST_1);
+                            mv.visitInsn(IRETURN);
+
+                            mv.visitLabel(label);
+                        }
+                    };
+                }
+
+                return mv;
+            }
+        };
+        reader.accept(visitor, ClassReader.EXPAND_FRAMES);
+
+        if (!moduleNameFieldGenerated[0]) {
+            visitor.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                    "_JLINK_CONVERTED_MODULES", "Ljava/util/Set;", null, null);
+            MethodVisitor mv = visitor.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+            mv.visitCode();
+            mv.visitInsn(Opcodes.RETURN);
+            mv.visitMaxs(-1, -1);
+            mv.visitEnd();
+            initializeModuleNameField(mv, moduleNames);
+        }
+
+//        return writer.toByteArray();
+        return classFile;
+    }
+
+    private void initializeModuleNameField(MethodVisitor mv, Set<String> moduleNames) {
+        mv.visitIntInsn(Opcodes.BIPUSH, moduleNames.size());
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/String");
+        mv.visitInsn(Opcodes.DUP);
+
+        List<String> names = moduleNames.stream().toList();
+        for (int i = 0; i < names.size(); i++) {
+            mv.visitIntInsn(Opcodes.BIPUSH, i);
+            mv.visitLdcInsn(names.get(i));
+            mv.visitInsn(Opcodes.AASTORE);
+        }
+
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC,
+                "java/util/Set", "of", "([Ljava/lang/Object;)Ljava/util/Set;", true);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC,
+                "java/lang/Module", "_JLINK_CONVERTED_MODULES", "Ljava/util/Set;");
     }
 
     private void stripNonExistingProvideDirectives(PatchedModuleDirectives directives, ModularJarArchive archive) {
