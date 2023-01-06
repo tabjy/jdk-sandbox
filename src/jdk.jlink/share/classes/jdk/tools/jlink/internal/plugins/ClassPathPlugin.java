@@ -30,9 +30,11 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.lang.module.Configuration;
 import java.lang.module.ModuleDescriptor;
 import java.lang.module.ModuleFinder;
 import java.lang.module.ModuleReader;
+import java.lang.module.ModuleReference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -247,44 +249,34 @@ public class ClassPathPlugin extends AbstractPlugin {
         }
 
         ModuleFinder finder = JlinkTask.newModuleFinder(modulePath, Set.of(), roots);
-        finder.findAll().stream().flatMap(reference -> {
-            try (ModuleReader reader = reference.open()) {
-                reader.list().forEach(path -> {
-                    try (InputStream is = reader.open(path).orElseThrow()) {
-                        // TODO: clean this up
-                        if (reference.descriptor().name().equals("java.base") && path.equals("java/lang/Module.class")) {
-                            moduleClassBytes[0] = is.readAllBytes();
-                            return;
-                        }
+        Configuration.empty().resolve(finder, ModuleFinder.of(), roots).modules().stream()
+                .filter(module -> in.moduleView().findModule(module.name()).isEmpty())
+                .forEach(module -> {
+                    System.out.println("adding " + module.name());
+                    ModuleReference reference = module.reference();
+                    try (ModuleReader reader = reference.open()) {
+                        reader.list().forEach(path -> {
+                            try (InputStream is = reader.open(path).orElseThrow()) {
+                                // TODO: clean this up
+                                if (reference.descriptor().name().equals("java.base") && path.equals("java/lang/Module.class")) {
+                                    moduleClassBytes[0] = is.readAllBytes();
+                                    return;
+                                }
 
-                        // FIXME: avoid loading all resources into memory, reader.open(path) is not designed for loading
-                        //        small resources like classes
-                        out.add(ResourcePoolEntryFactory.create(
-                                "/" + reference.descriptor().name() + "/" + path,
-                                ResourcePoolEntry.Type.CLASS_OR_RESOURCE,
-                                is.readAllBytes()));
+                                // FIXME: avoid loading all resources into memory, reader.open(path) is not designed for loading
+                                //        small resources like classes
+                                out.add(ResourcePoolEntryFactory.create(
+                                        "/" + reference.descriptor().name() + "/" + path,
+                                        ResourcePoolEntry.Type.CLASS_OR_RESOURCE,
+                                        is.readAllBytes()));
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
                     } catch (IOException e) {
-                        throw new RuntimeException(e);
+                        throw new UncheckedIOException(e);
                     }
                 });
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            }
-            return null;
-        });
-
-//        in.transformAndCopy(entry -> {
-//            if (entry.moduleName().equals("java.base") && entry.path().equals("java/lang/Module.class")) {
-//                try (InputStream is = entry.stream()) {
-//                return ResourcePoolEntryFactory.create(
-//                        "/java.base/java/lang/Module.class",
-//                        ResourcePoolEntry.Type.CLASS_OR_RESOURCE,
-//                        transformModuleClass(entry));
-//            }
-//
-//            return entry;
-//        }, out);
-
 
         if (moduleClassBytes[0] != null) {
             out.add(ResourcePoolEntryFactory.create(
