@@ -55,7 +55,6 @@ import jdk.tools.jlink.internal.plugins.ExcludeJmodSectionPlugin;
 import jdk.tools.jlink.internal.plugins.PluginsResourceBundle;
 import jdk.tools.jlink.plugin.Plugin;
 import jdk.tools.jlink.plugin.Plugin.Category;
-import jdk.tools.jlink.plugin.PluginException;
 
 /**
  *
@@ -297,6 +296,13 @@ public final class TaskHelper {
             return map;
         }
 
+        private void addRequiredPluginOptions(Plugin plugin) {
+            List<Plugin> dependencies = plugin.requiredPlugins();
+            for (Plugin dependency : dependencies) {
+                addEmptyArgumentMap(dependency);
+            }
+        }
+
         private void addOrderedPluginOptions(Plugin plugin,
             Set<String> optionsSeen) throws BadArgs {
             String option = plugin.getOption();
@@ -323,6 +329,7 @@ public final class TaskHelper {
                                     addEmptyArgumentMap(plugin);
                                     return;
                                 }
+                                addRequiredPluginOptions(plugin);
 
                                 Map<String, String> m = addArgumentMap(plugin);
                                 // handle one or more arguments

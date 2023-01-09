@@ -24,7 +24,9 @@
  */
 package jdk.tools.jlink.plugin;
 
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -206,4 +208,12 @@ public interface Plugin {
      * @throws PluginException
      */
     public ResourcePool transform(ResourcePool in, ResourcePoolBuilder out);
+
+    /**
+     * Returns a list of plugins that are required for the current plugin to run.
+     * @return a list of plugins
+     */
+    default List<Plugin> requiredPlugins() {
+        return new ArrayList<>();
+    }
 }

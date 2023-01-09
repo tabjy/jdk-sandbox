@@ -198,6 +198,8 @@ module java.base {
     exports jdk.internal.org.objectweb.asm.tree to
         jdk.jfr,
         jdk.jlink;
+    exports jdk.internal.org.objectweb.asm.tree.analysis to
+        jdk.jlink;
     exports jdk.internal.org.objectweb.asm.util to
         jdk.jfr;
     exports jdk.internal.org.objectweb.asm.commons to
