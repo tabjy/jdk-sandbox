@@ -252,7 +252,6 @@ public class ClassPathPlugin extends AbstractPlugin {
         Configuration.empty().resolve(finder, ModuleFinder.of(), roots).modules().stream()
                 .filter(module -> in.moduleView().findModule(module.name()).isEmpty())
                 .forEach(module -> {
-                    System.out.println("adding " + module.name());
                     ModuleReference reference = module.reference();
                     try (ModuleReader reader = reference.open()) {
                         reader.list().forEach(path -> {
@@ -354,8 +353,8 @@ public class ClassPathPlugin extends AbstractPlugin {
             initializeModuleNameField(mv, moduleNames);
         }
 
-//        return writer.toByteArray();
-        return classFile;
+        return writer.toByteArray();
+//        return classFile;
     }
 
     private void initializeModuleNameField(MethodVisitor mv, Set<String> moduleNames) {
