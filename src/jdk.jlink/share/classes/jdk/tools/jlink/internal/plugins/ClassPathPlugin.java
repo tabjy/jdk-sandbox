@@ -430,9 +430,10 @@ public class ClassPathPlugin extends AbstractPlugin {
                                 && invocation.owner.equals("java/util/ServiceLoader")) {
                             // one argument variant: ServiceLoader.load(Class):ServiceLoader
                             if (invocation.desc.equals("(Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
-                                if (lastTwoInstructions[0] instanceof LdcInsnNode ldc) {
+                                if (lastTwoInstructions[i[0] % 2] instanceof LdcInsnNode ldc) {
                                     if (ldc.cst instanceof Type type) {
                                         if (type.getSort() == Type.OBJECT) {
+                                            System.out.println(type.getClassName());
                                             directives.uses().add(type.getClassName());
                                             return;
                                         }
@@ -446,7 +447,7 @@ public class ClassPathPlugin extends AbstractPlugin {
                             }
 
                             // We don't care about loading services with ModuleLayer. Legacy code don't use it anyway.
-//                            System.err.println("Unknown ServiceLoader.load() invocation in: " + cn.name + "." + method.name + method.desc);
+                            System.err.println("Unknown ServiceLoader.load() invocation in: " + cn.name + "." + method.name + method.desc);
                         }
 
 
