@@ -4,13 +4,17 @@ import com.sun.tools.jdeps.JdepsConfiguration;
 import com.sun.tools.jdeps.ModuleInfoBuilder;
 import jdk.internal.access.SharedSecrets;
 import jdk.internal.opt.CommandLine;
+import jdk.internal.org.objectweb.asm.AnnotationVisitor;
 import jdk.internal.org.objectweb.asm.ClassReader;
 import jdk.internal.org.objectweb.asm.ClassVisitor;
 import jdk.internal.org.objectweb.asm.ClassWriter;
+import jdk.internal.org.objectweb.asm.FieldVisitor;
+import jdk.internal.org.objectweb.asm.Handle;
 import jdk.internal.org.objectweb.asm.Label;
 import jdk.internal.org.objectweb.asm.MethodVisitor;
 import jdk.internal.org.objectweb.asm.ModuleVisitor;
 import jdk.internal.org.objectweb.asm.Opcodes;
+import jdk.internal.org.objectweb.asm.RecordComponentVisitor;
 import jdk.internal.org.objectweb.asm.Type;
 import jdk.internal.org.objectweb.asm.commons.AdviceAdapter;
 import jdk.internal.org.objectweb.asm.tree.AbstractInsnNode;
@@ -34,6 +38,7 @@ import jdk.tools.jlink.plugin.ResourcePoolEntry;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -419,55 +424,7 @@ public class ClassPathPlugin extends AbstractPlugin {
             }
 
             try (InputStream is = entry.stream()) {
-                ClassReader cr = new ClassReader(is.readAllBytes());
-                ClassNode cn = new ClassNode();
-                cr.accept(cn, ClassReader.EXPAND_FRAMES);
-
-                for (MethodNode mn : cn.methods) {
-                    Analyzer<BasicValue> analyzer = new Analyzer<>(new LdcInterpreter());
-                    try {
-                        analyzer.analyze(cn.name, mn);
-                    } catch (AnalyzerException e) {
-                        throw new RuntimeException(e);
-                    }
-
-                    for (AbstractInsnNode in : mn.instructions) {
-                        if (!(in instanceof MethodInsnNode min)
-                                || min.getOpcode() != Opcodes.INVOKESTATIC
-                                || !min.owner.equals("java/util/ServiceLoader")
-                                || !min.name.equals("load")
-                                || !List.of(
-                                "(Ljava/lang/Class;)Ljava/util/ServiceLoader;",
-                                "(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;"
-                        ).contains(min.desc)) {
-                            continue;
-                        }
-
-
-                        BasicValue arg;
-
-
-                        try {
-//                            int jd = 0;
-                            arg = getStackValue(mn.instructions.indexOf(min), 0, analyzer.getFrames());
-                            if (min.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
-                                System.out.println("class loader detected");
-                            }
-                        } catch (AnalyzerException e) {
-                            throw new RuntimeException(e);
-                        }
-                        if (!(arg instanceof TypeValue value) || value.getType() == null) {
-                            System.err.println("Unknown ServiceLoader.load() invocation in: " + cn.name + "." + mn.name + mn.desc);
-                            continue;
-                        }
-
-                        LdcInsnNode ldc = value.getLdcNode();
-                        String spi = value.getType().getClassName();
-
-                        System.out.println(spi);
-                        directives.uses().add(spi);
-                    }
-                }
+                addUseDirectives(directives, is.readAllBytes());
 
                 /*
                 cn.methods.forEach(method -> {
@@ -513,6 +470,239 @@ public class ClassPathPlugin extends AbstractPlugin {
                 throw new UncheckedIOException(e);
             }
         });
+    }
+
+    public static void main(String[] args) throws Exception {
+        ClassWriter classWriter = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
+        MethodVisitor methodVisitor;
+
+        classWriter.visit(Opcodes.V11, Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER | Opcodes.ACC_ABSTRACT, "org/graalvm/home/HomeFinder", null, "java/lang/Object", null);
+
+        classWriter.visitInnerClass("java/lang/invoke/MethodHandles$Lookup", "java/lang/invoke/MethodHandles", "Lookup", Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_STATIC);
+        {
+            methodVisitor = classWriter.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "getInstance", "()Lorg/graalvm/home/HomeFinder;", null, null);
+            methodVisitor.visitCode();
+
+            Label label0 = new Label();
+//            Label label1 = new Label();
+//            Label label2 = new Label();
+//            methodVisitor.visitTryCatchBlock(label0, label1, label2, "java/util/NoSuchElementException");
+//            Label label3 = new Label();
+//            methodVisitor.visitLabel(label3);
+//            methodVisitor.visitLineNumber(98, label3);
+//            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "org/graalvm/nativeimage/ImageInfo", "inImageCode", "()Z", false);
+//            Label label4 = new Label();
+//            methodVisitor.visitJumpInsn(Opcodes.IFEQ, label4);
+//            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
+//            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "org/graalvm/nativeimage/ImageSingletons", "contains", "(Ljava/lang/Class;)Z", false);
+//            methodVisitor.visitJumpInsn(Opcodes.IFEQ, label4);
+//            Label label5 = new Label();
+//            methodVisitor.visitLabel(label5);
+//            methodVisitor.visitLineNumber(99, label5);
+//            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
+//            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "org/graalvm/nativeimage/ImageSingletons", "lookup", "(Ljava/lang/Class;)Ljava/lang/Object;", false);
+//            methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, "org/graalvm/home/HomeFinder");
+//            methodVisitor.visitInsn(Opcodes.ARETURN);
+//            methodVisitor.visitLabel(label4);
+//            methodVisitor.visitLineNumber(101, label4);
+//            methodVisitor.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+            // #<inst>: <locals> | <stacks>
+
+            // #0: .... |
+            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
+            // #1: .... | Ljava/lang/Class;
+            methodVisitor.visitVarInsn(Opcodes.ASTORE, 0);
+            Label label6 = new Label();
+            // #2: Ljava/lang/Class;... |
+            methodVisitor.visitLabel(label6);
+//            methodVisitor.visitLineNumber(102, label6);
+            // #3: Ljava/lang/Class;... |
+            methodVisitor.visitVarInsn(Opcodes.ALOAD, 0);
+            // #4: Ljava/lang/Class;... | Ljava/lang/Class;
+            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getModule", "()Ljava/lang/Module;", false);
+            // #5: Ljava/lang/Class;... | R(Ljava/lang/Module;)
+            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Module", "getLayer", "()Ljava/lang/ModuleLayer;", false);
+            // #6: Ljava/lang/Class;... | R(Ljava/lang/ModuleLayer;)
+            methodVisitor.visitVarInsn(Opcodes.ASTORE, 1);
+            Label label7 = new Label();
+            // #7: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
+            methodVisitor.visitLabel(label7);
+//            methodVisitor.visitLineNumber(104, label7);
+            // #8: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
+            methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
+            Label label8 = new Label();
+            // #9: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/lang/ModuleLayer;)
+            methodVisitor.visitJumpInsn(Opcodes.IFNULL, label8);
+//            Label label9 = new Label();
+//            methodVisitor.visitLabel(label9);
+//            methodVisitor.visitLineNumber(105, label9);
+            // #10: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
+            methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
+            // #11: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/lang/ModuleLayer;)
+            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
+            // #12: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/lang/ModuleLayer;)Ljava/lang/Class;
+            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/ServiceLoader", "load", "(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;", false);
+
+            // #13: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/util/ServiceLoader;)
+            methodVisitor.visitVarInsn(Opcodes.ASTORE, 2);
+            Label label10 = new Label();
+            // #14: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
+            methodVisitor.visitLabel(label10);
+            Label label11 = new Label();
+            // #15: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
+            methodVisitor.visitJumpInsn(Opcodes.GOTO, label11);
+            // #16: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
+            methodVisitor.visitLabel(label8);
+//            methodVisitor.visitLineNumber(107, label8);
+            // #17 (computed): Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
+//            methodVisitor.visitFrame(Opcodes.F_APPEND, 2, new Object[]{"java/lang/Class", "java/lang/ModuleLayer"}, 0, null);
+            // #18: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
+            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
+            // #19: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | Ljava/lang/Class;
+            methodVisitor.visitVarInsn(Opcodes.ALOAD, 0);
+            // #20: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | Ljava/lang/Class;Ljava/lang/Class;
+            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getClassLoader", "()Ljava/lang/ClassLoader;", false);
+            // #21: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | Ljava/lang/Class;R(Ljava/lang/ClassLoader;)
+            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/ServiceLoader", "load", "(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;", false);
+            // #22: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/util/ServiceLoader;)
+            methodVisitor.visitVarInsn(Opcodes.ASTORE, 2);
+            // #23: RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
+            methodVisitor.visitLabel(label11);
+//            methodVisitor.visitLineNumber(109, label11);
+            // #24 (computed): RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
+//            methodVisitor.visitFrame(Opcodes.F_APPEND, 1, new Object[]{"java/lang/Iterable"}, 0, null);
+//            methodVisitor.visitVarInsn(Opcodes.ALOAD, 2);
+//            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/lang/Iterable", "iterator", "()Ljava/util/Iterator;", true);
+//            methodVisitor.visitVarInsn(Opcodes.ASTORE, 3);
+//            Label label12 = new Label();
+//            methodVisitor.visitLabel(label12);
+//            methodVisitor.visitLineNumber(110, label12);
+//            methodVisitor.visitVarInsn(Opcodes.ALOAD, 3);
+//            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "hasNext", "()Z", true);
+//            methodVisitor.visitJumpInsn(Opcodes.IFNE, label0);
+//            Label label13 = new Label();
+//            methodVisitor.visitLabel(label13);
+//            methodVisitor.visitLineNumber(111, label13);
+            // #25: RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
+            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
+            // #26: RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). | R("Lorg/graalvm/home/HomeFinder;")
+            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/ServiceLoader", "load", "(Ljava/lang/Class;)Ljava/util/ServiceLoader;", false);
+            // #27: RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). | R("Ljava/util/ServiceLoader;")
+            methodVisitor.visitVarInsn(Opcodes.ASTORE, 2);
+//            Label label14 = new Label();
+//            methodVisitor.visitLabel(label14);
+//            methodVisitor.visitLineNumber(112, label14);
+//            methodVisitor.visitVarInsn(Opcodes.ALOAD, 2);
+//            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/lang/Iterable", "iterator", "()Ljava/util/Iterator;", true);
+//            methodVisitor.visitVarInsn(Opcodes.ASTORE, 3);
+//            methodVisitor.visitLabel(label0);
+//            methodVisitor.visitLineNumber(115, label0);
+//            methodVisitor.visitFrame(Opcodes.F_APPEND, 1, new Object[]{"java/util/Iterator"}, 0, null);
+            // #28
+            methodVisitor.visitVarInsn(Opcodes.ALOAD, 3);
+            // #29
+            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "next", "()Ljava/lang/Object;", true);
+            // #30
+            methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, "org/graalvm/home/HomeFinder");
+//            methodVisitor.visitLabel(label1);
+            // #31
+            methodVisitor.visitInsn(Opcodes.ARETURN);
+//            methodVisitor.visitLabel(label2);
+//            methodVisitor.visitLineNumber(116, label2);
+//            methodVisitor.visitFrame(Opcodes.F_SAME1, 0, null, 1, new Object[]{"java/util/NoSuchElementException"});
+//            methodVisitor.visitVarInsn(Opcodes.ASTORE, 4);
+//            Label label15 = new Label();
+//            methodVisitor.visitLabel(label15);
+//            methodVisitor.visitLineNumber(117, label15);
+//            methodVisitor.visitTypeInsn(Opcodes.NEW, "java/lang/IllegalStateException");
+//            methodVisitor.visitInsn(Opcodes.DUP);
+//            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
+//            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getName", "()Ljava/lang/String;", false);
+//            methodVisitor.visitInvokeDynamicInsn("makeConcatWithConstants", "(Ljava/lang/String;)Ljava/lang/String;", new Handle(Opcodes.H_INVOKESTATIC, "java/lang/invoke/StringConcatFactory", "makeConcatWithConstants", "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;", false), new Object[]{"No implementation of \u0001 could be found"});
+//            methodVisitor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/IllegalStateException", "<init>", "(Ljava/lang/String;)V", false);
+//            methodVisitor.visitInsn(Opcodes.ATHROW);
+            Label label16 = new Label();
+            // #32
+            methodVisitor.visitLabel(label16);
+            methodVisitor.visitLocalVariable("services", "Ljava/lang/Iterable;", "Ljava/lang/Iterable<Lorg/graalvm/home/HomeFinder;>;", label10, label8, 2);
+//            methodVisitor.visitLocalVariable("e", "Ljava/util/NoSuchElementException;", null, label15, label16, 4);
+            methodVisitor.visitLocalVariable("lookupClass", "Ljava/lang/Class;", "Ljava/lang/Class<*>;", label6, label16, 0);
+            methodVisitor.visitLocalVariable("moduleLayer", "Ljava/lang/ModuleLayer;", null, label7, label16, 1);
+            methodVisitor.visitLocalVariable("services", "Ljava/lang/Iterable;", "Ljava/lang/Iterable<Lorg/graalvm/home/HomeFinder;>;", label11, label16, 2);
+//            methodVisitor.visitLocalVariable("iterator", "Ljava/util/Iterator;", "Ljava/util/Iterator<Lorg/graalvm/home/HomeFinder;>;", label12, label16, 3);
+            methodVisitor.visitMaxs(-1, -1);
+            methodVisitor.visitEnd();
+        }
+        classWriter.visitEnd();
+
+//        return classWriter.toByteArray();
+        byte[] bytes = classWriter.toByteArray();
+
+
+//        byte[] bytes = new FileInputStream("/home/kxu/.config/JetBrains/IdeaIC2022.3/scratches/HomeFinder.class").readAllBytes();
+        new ClassPathPlugin().addUseDirectives(new PatchedModuleDirectives(), bytes);
+    }
+
+    private void addUseDirectives(PatchedModuleDirectives directives, byte[] classFile) {
+        ClassReader cr = new ClassReader(classFile);
+        ClassNode cn = new ClassNode();
+        cr.accept(cn, ClassReader.EXPAND_FRAMES);
+
+        for (MethodNode mn : cn.methods) {
+            Analyzer<BasicValue> analyzer = new Analyzer<>(new LdcInterpreter());
+            try {
+                analyzer.analyze(cn.name, mn);
+            } catch (AnalyzerException e) {
+                throw new RuntimeException(e);
+            }
+
+            for (AbstractInsnNode in : mn.instructions) {
+                if (!(in instanceof MethodInsnNode min)
+                        || min.getOpcode() != Opcodes.INVOKESTATIC
+                        || !min.owner.equals("java/util/ServiceLoader")
+                        || !min.name.equals("load")
+                        || !List.of(
+                        "(Ljava/lang/Class;)Ljava/util/ServiceLoader;",
+                        "(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;",
+                        "(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;"
+                ).contains(min.desc)) {
+                    continue;
+                }
+
+                BasicValue arg;
+                try {
+                    if (min.desc.equals("(Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
+                        arg = getStackValue(mn.instructions.indexOf(min), 0, analyzer.getFrames());
+                    } else if (min.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
+                        arg = getStackValue(mn.instructions.indexOf(min), 1, analyzer.getFrames());
+                    } else if (min.desc.equals("(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
+                        arg = getStackValue(mn.instructions.indexOf(min), 0, analyzer.getFrames());
+                    } else {
+                        throw new AssertionError();
+                    }
+
+//                    if (min.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
+//                        System.err.println("class loader detected:");
+//                    }
+//                    if (min.desc.equals("(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
+//                        System.err.println("module layer detected:");
+//                    }
+                } catch (AnalyzerException e) {
+                    throw new RuntimeException(e);
+                }
+                if (!(arg instanceof TypeValue value) || value.getType() == null) {
+                    System.err.println("Unknown ServiceLoader.load() invocation in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in));
+                    continue;
+                }
+
+                LdcInsnNode ldc = value.getLdcNode();
+                String spi = value.getType().getClassName();
+
+                System.out.println("ServiceLoader.load(" + spi +".class) in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in)) ;
+                directives.uses().add(spi);
+            }
+        }
     }
 
     // FIXME: copied from ClassForNamePlugin, need to refactor
