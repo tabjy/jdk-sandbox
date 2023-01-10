@@ -4,22 +4,12 @@ import com.sun.tools.jdeps.JdepsConfiguration;
 import com.sun.tools.jdeps.ModuleInfoBuilder;
 import jdk.internal.access.SharedSecrets;
 import jdk.internal.opt.CommandLine;
-import jdk.internal.org.objectweb.asm.AnnotationVisitor;
 import jdk.internal.org.objectweb.asm.ClassReader;
-import jdk.internal.org.objectweb.asm.ClassVisitor;
 import jdk.internal.org.objectweb.asm.ClassWriter;
-import jdk.internal.org.objectweb.asm.FieldVisitor;
-import jdk.internal.org.objectweb.asm.Handle;
-import jdk.internal.org.objectweb.asm.Label;
-import jdk.internal.org.objectweb.asm.MethodVisitor;
 import jdk.internal.org.objectweb.asm.ModuleVisitor;
 import jdk.internal.org.objectweb.asm.Opcodes;
-import jdk.internal.org.objectweb.asm.RecordComponentVisitor;
-import jdk.internal.org.objectweb.asm.Type;
-import jdk.internal.org.objectweb.asm.commons.AdviceAdapter;
 import jdk.internal.org.objectweb.asm.tree.AbstractInsnNode;
 import jdk.internal.org.objectweb.asm.tree.ClassNode;
-import jdk.internal.org.objectweb.asm.tree.LdcInsnNode;
 import jdk.internal.org.objectweb.asm.tree.MethodInsnNode;
 import jdk.internal.org.objectweb.asm.tree.MethodNode;
 import jdk.internal.org.objectweb.asm.tree.analysis.Analyzer;
@@ -38,7 +28,6 @@ import jdk.tools.jlink.plugin.ResourcePoolEntry;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -60,7 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.function.Function;
 
 public class ClassPathPlugin extends AbstractPlugin {
     private static final String NAME = "class-path";
@@ -153,6 +142,8 @@ public class ClassPathPlugin extends AbstractPlugin {
 
     @Override
     public ResourcePool transform(ResourcePool in, ResourcePoolBuilder out) {
+        in.transformAndCopy(Function.identity(), out);
+
         // For multi-release jars, use the version of java.base module or fallback to the current runtime version
         final Runtime.Version[] version = {Runtime.version()};
         in.moduleView().findModule(JAVA_BASE_MOD)
@@ -171,11 +162,6 @@ public class ClassPathPlugin extends AbstractPlugin {
                 throw new IllegalArgumentException("Class path entry " + p + " does not exist");
             }
         }
-
-        // TODO:
-        //   1. load resources from class path
-        //   2. generate and compile a module-info.class
-        //   3. add resources and module-info to resource pool
 
         // generator module descriptors with jdeps
         List<ModuleDescriptor> descriptors;
@@ -210,21 +196,8 @@ public class ClassPathPlugin extends AbstractPlugin {
             directives.add(directive);
         }
 
-        // TODO: clean this up
-        byte[][] moduleClassBytes = new byte[1][];
-        in.entries().forEach(entry -> {
-            if (entry.moduleName().equals("java.base") && entry.path().equals("/java.base/java/lang/Module.class")) {
-//                moduleClassEntry[0] = entry;
-                moduleClassBytes[0] = entry.contentBytes();
-                return;
-            }
-
-            out.add(entry);
-        });
-
-        Set<String> roots = new HashSet<>();
-
         // TODO: add generated module resources to pool
+        Set<String> roots = new HashSet<>();
         for (int i = 0; i < descriptors.size(); i++) {
             ModuleDescriptor descriptor = descriptors.get(i);
             Archive archive = archives.get(i);
@@ -268,12 +241,6 @@ public class ClassPathPlugin extends AbstractPlugin {
                     try (ModuleReader reader = reference.open()) {
                         reader.list().forEach(path -> {
                             try (InputStream is = reader.open(path).orElseThrow()) {
-                                // TODO: clean this up
-                                if (reference.descriptor().name().equals("java.base") && path.equals("java/lang/Module.class")) {
-                                    moduleClassBytes[0] = is.readAllBytes();
-                                    return;
-                                }
-
                                 // FIXME: avoid loading all resources into memory, reader.open(path) is not designed for loading
                                 //        small resources like classes
                                 out.add(ResourcePoolEntryFactory.create(
@@ -289,102 +256,7 @@ public class ClassPathPlugin extends AbstractPlugin {
                     }
                 });
 
-        if (moduleClassBytes[0] != null) {
-            out.add(ResourcePoolEntryFactory.create(
-                    "/java.base/java/lang/Module.class",
-                    ResourcePoolEntry.Type.CLASS_OR_RESOURCE,
-                    transformModuleClass(
-                            moduleClassBytes[0],
-                            descriptors.stream().map(ModuleDescriptor::name).collect(Collectors.toSet()))));
-        }
-
         return out.build();
-    }
-
-    private byte[] transformModuleClass(byte[] classFile, Set<String> moduleNames) {
-        ClassReader reader = new ClassReader(classFile);
-        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
-
-        boolean[] moduleNameFieldGenerated = new boolean[]{false};
-        ClassVisitor visitor = new ClassVisitor(Opcodes.ASM9, writer) {
-            @Override
-            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
-                MethodVisitor mv = super.visitMethod(access, name, descriptor, signature, exceptions);
-
-                if (name.equals("<clinit>") && descriptor.equals("()V")) {
-                    moduleNameFieldGenerated[0] = true;
-
-                    visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-                            "_JLINK_CONVERTED_MODULES", "Ljava/util/Set;", null, null);
-                    return new AdviceAdapter(Opcodes.ASM9, mv, access, name, descriptor) {
-                        @Override
-                        protected void onMethodExit(int opcode) {
-                            initializeModuleNameField(mv, moduleNames);
-                            super.onMethodExit(opcode);
-                        }
-                    };
-                }
-
-                if (name.equals("canUse") && descriptor.equals("(Ljava/lang/Class;)Z")) {
-                    return new AdviceAdapter(Opcodes.ASM9, mv, access, name, descriptor) {
-                        @Override
-                        protected void onMethodEnter() {
-                            mv.visitFieldInsn(GETSTATIC, "java/lang/Module", "_JLINK_CONVERTED_MODULES",
-                                    "Ljava/util/Set;");
-                            mv.visitVarInsn(ALOAD, 0);
-                            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Module", "getDescriptor",
-                                    "()Ljava/lang/module/ModuleDescriptor;", false);
-                            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/module/ModuleDescriptor", "name",
-                                    "()Ljava/lang/String;", false);
-                            mv.visitMethodInsn(INVOKEINTERFACE, "java/util/Set", "contains",
-                                    "(Ljava/lang/Object;)Z", true);
-
-                            Label label = new Label();
-                            mv.visitJumpInsn(IFEQ, label);
-                            mv.visitInsn(ICONST_1);
-                            mv.visitInsn(IRETURN);
-
-                            mv.visitLabel(label);
-                        }
-                    };
-                }
-
-                return mv;
-            }
-        };
-        reader.accept(visitor, ClassReader.EXPAND_FRAMES);
-
-        if (!moduleNameFieldGenerated[0]) {
-            visitor.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-                    "_JLINK_CONVERTED_MODULES", "Ljava/util/Set;", null, null);
-            MethodVisitor mv = visitor.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
-            mv.visitCode();
-            mv.visitInsn(Opcodes.RETURN);
-            mv.visitMaxs(-1, -1);
-            mv.visitEnd();
-            initializeModuleNameField(mv, moduleNames);
-        }
-
-        return writer.toByteArray();
-//        return classFile;
-    }
-
-    private void initializeModuleNameField(MethodVisitor mv, Set<String> moduleNames) {
-        mv.visitIntInsn(Opcodes.BIPUSH, moduleNames.size());
-        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/String");
-        mv.visitInsn(Opcodes.DUP);
-
-        List<String> names = moduleNames.stream().toList();
-        for (int i = 0; i < names.size(); i++) {
-            mv.visitIntInsn(Opcodes.BIPUSH, i);
-            mv.visitLdcInsn(names.get(i));
-            mv.visitInsn(Opcodes.AASTORE);
-        }
-
-        mv.visitMethodInsn(Opcodes.INVOKESTATIC,
-                "java/util/Set", "of", "([Ljava/lang/Object;)Ljava/util/Set;", true);
-        mv.visitFieldInsn(Opcodes.PUTSTATIC,
-                "java/lang/Module", "_JLINK_CONVERTED_MODULES", "Ljava/util/Set;");
     }
 
     private void stripNonExistingProvideDirectives(PatchedModuleDirectives directives, ModularJarArchive archive) {
@@ -425,223 +297,10 @@ public class ClassPathPlugin extends AbstractPlugin {
 
             try (InputStream is = entry.stream()) {
                 addUseDirectives(directives, is.readAllBytes());
-
-                /*
-                cn.methods.forEach(method -> {
-                    AbstractInsnNode[] lastTwoInstructions = new AbstractInsnNode[2];
-                    int[] i = new int[]{0};
-
-                    method.instructions.forEach(instruction -> {
-                        lastTwoInstructions[i[0]++ % 2] = instruction;
-
-                        // FIXME: Argument could be already on stack. How to do data-flow analysis properly?
-                        if (instruction instanceof MethodInsnNode invocation
-                                && invocation.getOpcode() == Opcodes.INVOKESTATIC
-                                && invocation.name.equals("load")
-                                && invocation.owner.equals("java/util/ServiceLoader")) {
-                            // one argument variant: ServiceLoader.load(Class):ServiceLoader
-                            if (invocation.desc.equals("(Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
-                                if (lastTwoInstructions[i[0] % 2] instanceof LdcInsnNode ldc) {
-                                    if (ldc.cst instanceof Type type) {
-                                        if (type.getSort() == Type.OBJECT) {
-                                            System.out.println(type.getClassName());
-                                            directives.uses().add(type.getClassName());
-                                            return;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // two argument variant: ServiceLoader.load(Class, ClassLoader):ServiceLoader
-                            if (invocation.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
-                                // TODO: the loading classloader argument to stack might be non-trivial, unlike LDC
-                            }
-
-                            // We don't care about loading services with ModuleLayer. Legacy code don't use it anyway.
-                            System.err.println("Unknown ServiceLoader.load() invocation in: " + cn.name + "." + method.name + method.desc);
-                        }
-
-
-                    });
-                });
-                 */
-
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
         });
-    }
-
-    public static void main(String[] args) throws Exception {
-        ClassWriter classWriter = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
-        MethodVisitor methodVisitor;
-
-        classWriter.visit(Opcodes.V11, Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER | Opcodes.ACC_ABSTRACT, "org/graalvm/home/HomeFinder", null, "java/lang/Object", null);
-
-        classWriter.visitInnerClass("java/lang/invoke/MethodHandles$Lookup", "java/lang/invoke/MethodHandles", "Lookup", Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_STATIC);
-        {
-            methodVisitor = classWriter.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "getInstance", "()Lorg/graalvm/home/HomeFinder;", null, null);
-            methodVisitor.visitCode();
-
-            Label label0 = new Label();
-//            Label label1 = new Label();
-//            Label label2 = new Label();
-//            methodVisitor.visitTryCatchBlock(label0, label1, label2, "java/util/NoSuchElementException");
-//            Label label3 = new Label();
-//            methodVisitor.visitLabel(label3);
-//            methodVisitor.visitLineNumber(98, label3);
-//            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "org/graalvm/nativeimage/ImageInfo", "inImageCode", "()Z", false);
-//            Label label4 = new Label();
-//            methodVisitor.visitJumpInsn(Opcodes.IFEQ, label4);
-//            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
-//            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "org/graalvm/nativeimage/ImageSingletons", "contains", "(Ljava/lang/Class;)Z", false);
-//            methodVisitor.visitJumpInsn(Opcodes.IFEQ, label4);
-//            Label label5 = new Label();
-//            methodVisitor.visitLabel(label5);
-//            methodVisitor.visitLineNumber(99, label5);
-//            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
-//            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "org/graalvm/nativeimage/ImageSingletons", "lookup", "(Ljava/lang/Class;)Ljava/lang/Object;", false);
-//            methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, "org/graalvm/home/HomeFinder");
-//            methodVisitor.visitInsn(Opcodes.ARETURN);
-//            methodVisitor.visitLabel(label4);
-//            methodVisitor.visitLineNumber(101, label4);
-//            methodVisitor.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
-
-            // #<inst>: <locals> | <stacks>
-
-            // #0: .... |
-            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
-            // #1: .... | Ljava/lang/Class;
-            methodVisitor.visitVarInsn(Opcodes.ASTORE, 0);
-            Label label6 = new Label();
-            // #2: Ljava/lang/Class;... |
-            methodVisitor.visitLabel(label6);
-//            methodVisitor.visitLineNumber(102, label6);
-            // #3: Ljava/lang/Class;... |
-            methodVisitor.visitVarInsn(Opcodes.ALOAD, 0);
-            // #4: Ljava/lang/Class;... | Ljava/lang/Class;
-            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getModule", "()Ljava/lang/Module;", false);
-            // #5: Ljava/lang/Class;... | R(Ljava/lang/Module;)
-            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Module", "getLayer", "()Ljava/lang/ModuleLayer;", false);
-            // #6: Ljava/lang/Class;... | R(Ljava/lang/ModuleLayer;)
-            methodVisitor.visitVarInsn(Opcodes.ASTORE, 1);
-            Label label7 = new Label();
-            // #7: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
-            methodVisitor.visitLabel(label7);
-//            methodVisitor.visitLineNumber(104, label7);
-            // #8: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
-            methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
-            Label label8 = new Label();
-            // #9: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/lang/ModuleLayer;)
-            methodVisitor.visitJumpInsn(Opcodes.IFNULL, label8);
-//            Label label9 = new Label();
-//            methodVisitor.visitLabel(label9);
-//            methodVisitor.visitLineNumber(105, label9);
-            // #10: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
-            methodVisitor.visitVarInsn(Opcodes.ALOAD, 1);
-            // #11: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/lang/ModuleLayer;)
-            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
-            // #12: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/lang/ModuleLayer;)Ljava/lang/Class;
-            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/ServiceLoader", "load", "(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;", false);
-
-            // #13: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/util/ServiceLoader;)
-            methodVisitor.visitVarInsn(Opcodes.ASTORE, 2);
-            Label label10 = new Label();
-            // #14: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
-            methodVisitor.visitLabel(label10);
-            Label label11 = new Label();
-            // #15: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
-            methodVisitor.visitJumpInsn(Opcodes.GOTO, label11);
-            // #16: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
-            methodVisitor.visitLabel(label8);
-//            methodVisitor.visitLineNumber(107, label8);
-            // #17 (computed): Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
-//            methodVisitor.visitFrame(Opcodes.F_APPEND, 2, new Object[]{"java/lang/Class", "java/lang/ModuleLayer"}, 0, null);
-            // #18: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. |
-            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
-            // #19: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | Ljava/lang/Class;
-            methodVisitor.visitVarInsn(Opcodes.ALOAD, 0);
-            // #20: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | Ljava/lang/Class;Ljava/lang/Class;
-            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getClassLoader", "()Ljava/lang/ClassLoader;", false);
-            // #21: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | Ljava/lang/Class;R(Ljava/lang/ClassLoader;)
-            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/ServiceLoader", "load", "(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;", false);
-            // #22: Ljava/lang/Class;R(Ljava/lang/ModuleLayer;).. | R(Ljava/util/ServiceLoader;)
-            methodVisitor.visitVarInsn(Opcodes.ASTORE, 2);
-            // #23: RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
-            methodVisitor.visitLabel(label11);
-//            methodVisitor.visitLineNumber(109, label11);
-            // #24 (computed): RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
-//            methodVisitor.visitFrame(Opcodes.F_APPEND, 1, new Object[]{"java/lang/Iterable"}, 0, null);
-//            methodVisitor.visitVarInsn(Opcodes.ALOAD, 2);
-//            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/lang/Iterable", "iterator", "()Ljava/util/Iterator;", true);
-//            methodVisitor.visitVarInsn(Opcodes.ASTORE, 3);
-//            Label label12 = new Label();
-//            methodVisitor.visitLabel(label12);
-//            methodVisitor.visitLineNumber(110, label12);
-//            methodVisitor.visitVarInsn(Opcodes.ALOAD, 3);
-//            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "hasNext", "()Z", true);
-//            methodVisitor.visitJumpInsn(Opcodes.IFNE, label0);
-//            Label label13 = new Label();
-//            methodVisitor.visitLabel(label13);
-//            methodVisitor.visitLineNumber(111, label13);
-            // #25: RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). |
-            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
-            // #26: RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). | R("Lorg/graalvm/home/HomeFinder;")
-            methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/ServiceLoader", "load", "(Ljava/lang/Class;)Ljava/util/ServiceLoader;", false);
-            // #27: RR(Ljava/lang/ModuleLayer;)R(Ljava/util/ServiceLoader;). | R("Ljava/util/ServiceLoader;")
-            methodVisitor.visitVarInsn(Opcodes.ASTORE, 2);
-//            Label label14 = new Label();
-//            methodVisitor.visitLabel(label14);
-//            methodVisitor.visitLineNumber(112, label14);
-//            methodVisitor.visitVarInsn(Opcodes.ALOAD, 2);
-//            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/lang/Iterable", "iterator", "()Ljava/util/Iterator;", true);
-//            methodVisitor.visitVarInsn(Opcodes.ASTORE, 3);
-//            methodVisitor.visitLabel(label0);
-//            methodVisitor.visitLineNumber(115, label0);
-//            methodVisitor.visitFrame(Opcodes.F_APPEND, 1, new Object[]{"java/util/Iterator"}, 0, null);
-            // #28
-            methodVisitor.visitVarInsn(Opcodes.ALOAD, 3);
-            // #29
-            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "next", "()Ljava/lang/Object;", true);
-            // #30
-            methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, "org/graalvm/home/HomeFinder");
-//            methodVisitor.visitLabel(label1);
-            // #31
-            methodVisitor.visitInsn(Opcodes.ARETURN);
-//            methodVisitor.visitLabel(label2);
-//            methodVisitor.visitLineNumber(116, label2);
-//            methodVisitor.visitFrame(Opcodes.F_SAME1, 0, null, 1, new Object[]{"java/util/NoSuchElementException"});
-//            methodVisitor.visitVarInsn(Opcodes.ASTORE, 4);
-//            Label label15 = new Label();
-//            methodVisitor.visitLabel(label15);
-//            methodVisitor.visitLineNumber(117, label15);
-//            methodVisitor.visitTypeInsn(Opcodes.NEW, "java/lang/IllegalStateException");
-//            methodVisitor.visitInsn(Opcodes.DUP);
-//            methodVisitor.visitLdcInsn(Type.getType("Lorg/graalvm/home/HomeFinder;"));
-//            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getName", "()Ljava/lang/String;", false);
-//            methodVisitor.visitInvokeDynamicInsn("makeConcatWithConstants", "(Ljava/lang/String;)Ljava/lang/String;", new Handle(Opcodes.H_INVOKESTATIC, "java/lang/invoke/StringConcatFactory", "makeConcatWithConstants", "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;", false), new Object[]{"No implementation of \u0001 could be found"});
-//            methodVisitor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/IllegalStateException", "<init>", "(Ljava/lang/String;)V", false);
-//            methodVisitor.visitInsn(Opcodes.ATHROW);
-            Label label16 = new Label();
-            // #32
-            methodVisitor.visitLabel(label16);
-            methodVisitor.visitLocalVariable("services", "Ljava/lang/Iterable;", "Ljava/lang/Iterable<Lorg/graalvm/home/HomeFinder;>;", label10, label8, 2);
-//            methodVisitor.visitLocalVariable("e", "Ljava/util/NoSuchElementException;", null, label15, label16, 4);
-            methodVisitor.visitLocalVariable("lookupClass", "Ljava/lang/Class;", "Ljava/lang/Class<*>;", label6, label16, 0);
-            methodVisitor.visitLocalVariable("moduleLayer", "Ljava/lang/ModuleLayer;", null, label7, label16, 1);
-            methodVisitor.visitLocalVariable("services", "Ljava/lang/Iterable;", "Ljava/lang/Iterable<Lorg/graalvm/home/HomeFinder;>;", label11, label16, 2);
-//            methodVisitor.visitLocalVariable("iterator", "Ljava/util/Iterator;", "Ljava/util/Iterator<Lorg/graalvm/home/HomeFinder;>;", label12, label16, 3);
-            methodVisitor.visitMaxs(-1, -1);
-            methodVisitor.visitEnd();
-        }
-        classWriter.visitEnd();
-
-//        return classWriter.toByteArray();
-        byte[] bytes = classWriter.toByteArray();
-
-
-//        byte[] bytes = new FileInputStream("/home/kxu/.config/JetBrains/IdeaIC2022.3/scratches/HomeFinder.class").readAllBytes();
-        new ClassPathPlugin().addUseDirectives(new PatchedModuleDirectives(), bytes);
     }
 
     private void addUseDirectives(PatchedModuleDirectives directives, byte[] classFile) {
@@ -672,22 +331,13 @@ public class ClassPathPlugin extends AbstractPlugin {
 
                 BasicValue arg;
                 try {
-                    if (min.desc.equals("(Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
-                        arg = getStackValue(mn.instructions.indexOf(min), 0, analyzer.getFrames());
-                    } else if (min.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
-                        arg = getStackValue(mn.instructions.indexOf(min), 1, analyzer.getFrames());
-                    } else if (min.desc.equals("(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
-                        arg = getStackValue(mn.instructions.indexOf(min), 0, analyzer.getFrames());
-                    } else {
-                        throw new AssertionError();
-                    }
-
-//                    if (min.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
-//                        System.err.println("class loader detected:");
-//                    }
-//                    if (min.desc.equals("(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
-//                        System.err.println("module layer detected:");
-//                    }
+                    arg = switch (min.desc) {
+                        case "(Ljava/lang/Class;)Ljava/util/ServiceLoader;", "(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;" ->
+                                getStackValue(mn.instructions.indexOf(min), 0, analyzer.getFrames());
+                        case "(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;" ->
+                                getStackValue(mn.instructions.indexOf(min), 1, analyzer.getFrames());
+                        default -> throw new AssertionError();
+                    };
                 } catch (AnalyzerException e) {
                     throw new RuntimeException(e);
                 }
@@ -696,18 +346,8 @@ public class ClassPathPlugin extends AbstractPlugin {
                     continue;
                 }
 
-                LdcInsnNode ldc = value.getLdcNode();
                 String spi = value.getType().getClassName();
-
-                if (min.desc.equals("(Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
-                    System.out.println("ServiceLoader.load(" + spi +".class) in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in)) ;
-                } else if (min.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
-                    System.out.println("ServiceLoader.load(" + spi +".class, (ClassLoader) ?) in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in)) ;
-                } else if (min.desc.equals("(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
-                    System.out.println("ServiceLoader.load((ModuleLayer) ?, " + spi +".class) in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in)) ;
-                } else {
-                    throw new AssertionError();
-                }
+                System.out.println("Detected ServiceLoader.load" + min.desc.replace("Ljava/lang/Class;", spi + ".class") + " in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in));
 
                 directives.uses().add(spi);
             }
