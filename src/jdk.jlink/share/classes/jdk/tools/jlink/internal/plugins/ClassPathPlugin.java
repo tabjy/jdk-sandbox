@@ -692,14 +692,23 @@ public class ClassPathPlugin extends AbstractPlugin {
                     throw new RuntimeException(e);
                 }
                 if (!(arg instanceof TypeValue value) || value.getType() == null) {
-                    System.err.println("Unknown ServiceLoader.load() invocation in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in));
+                    System.err.println("Unknown ServiceLoader.load" + min.desc + " invocation in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in));
                     continue;
                 }
 
                 LdcInsnNode ldc = value.getLdcNode();
                 String spi = value.getType().getClassName();
 
-                System.out.println("ServiceLoader.load(" + spi +".class) in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in)) ;
+                if (min.desc.equals("(Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
+                    System.out.println("ServiceLoader.load(" + spi +".class) in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in)) ;
+                } else if (min.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
+                    System.out.println("ServiceLoader.load(" + spi +".class, (ClassLoader) ?) in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in)) ;
+                } else if (min.desc.equals("(Ljava/lang/ModuleLayer;Ljava/lang/Class;)Ljava/util/ServiceLoader;")) {
+                    System.out.println("ServiceLoader.load((ModuleLayer) ?, " + spi +".class) in: " + cn.name + "." + mn.name + mn.desc + ", inst #" + mn.instructions.indexOf(in)) ;
+                } else {
+                    throw new AssertionError();
+                }
+
                 directives.uses().add(spi);
             }
         }
