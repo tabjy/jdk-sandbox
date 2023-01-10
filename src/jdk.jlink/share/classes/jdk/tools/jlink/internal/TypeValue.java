@@ -14,6 +14,11 @@ public class TypeValue extends BasicValue {
         this.node = node;
     }
 
+    public TypeValue(Type type) {
+        super(Type.getObjectType("java/lang/Class"));
+        this.type = type;
+    }
+
     public Type getType() {
         return type;
     }

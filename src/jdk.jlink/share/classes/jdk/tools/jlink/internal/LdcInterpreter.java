@@ -39,7 +39,13 @@ public class LdcInterpreter extends BasicInterpreter {
             return new StringValue((StringValue)v1);
         }
 
-        // FIXME: merge TypeValue properly?
+        // FIXME: merge different types into super type properly?
+        if (v1 instanceof TypeValue
+                && v2 instanceof TypeValue
+                && v1.equals(v2)) {
+            return new TypeValue(((TypeValue)v1).getType());
+        }
+
         return super.merge(degradeValue(v1), degradeValue(v2));
     }
 
