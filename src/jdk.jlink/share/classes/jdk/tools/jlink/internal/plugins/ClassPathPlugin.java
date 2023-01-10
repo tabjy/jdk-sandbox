@@ -17,10 +17,17 @@ import jdk.internal.org.objectweb.asm.tree.AbstractInsnNode;
 import jdk.internal.org.objectweb.asm.tree.ClassNode;
 import jdk.internal.org.objectweb.asm.tree.LdcInsnNode;
 import jdk.internal.org.objectweb.asm.tree.MethodInsnNode;
+import jdk.internal.org.objectweb.asm.tree.MethodNode;
+import jdk.internal.org.objectweb.asm.tree.analysis.Analyzer;
+import jdk.internal.org.objectweb.asm.tree.analysis.AnalyzerException;
+import jdk.internal.org.objectweb.asm.tree.analysis.BasicValue;
+import jdk.internal.org.objectweb.asm.tree.analysis.Frame;
 import jdk.tools.jlink.internal.Archive;
 import jdk.tools.jlink.internal.JlinkTask;
+import jdk.tools.jlink.internal.LdcInterpreter;
 import jdk.tools.jlink.internal.ModularJarArchive;
 import jdk.tools.jlink.internal.ResourcePoolEntryFactory;
+import jdk.tools.jlink.internal.TypeValue;
 import jdk.tools.jlink.plugin.ResourcePool;
 import jdk.tools.jlink.plugin.ResourcePoolBuilder;
 import jdk.tools.jlink.plugin.ResourcePoolEntry;
@@ -416,6 +423,53 @@ public class ClassPathPlugin extends AbstractPlugin {
                 ClassNode cn = new ClassNode();
                 cr.accept(cn, ClassReader.EXPAND_FRAMES);
 
+                for (MethodNode mn : cn.methods) {
+                    Analyzer<BasicValue> analyzer = new Analyzer<>(new LdcInterpreter());
+                    try {
+                        analyzer.analyze(cn.name, mn);
+                    } catch (AnalyzerException e) {
+                        throw new RuntimeException(e);
+                    }
+
+                    for (AbstractInsnNode in : mn.instructions) {
+                        if (!(in instanceof MethodInsnNode min)
+                                || min.getOpcode() != Opcodes.INVOKESTATIC
+                                || !min.owner.equals("java/util/ServiceLoader")
+                                || !min.name.equals("load")
+                                || !List.of(
+                                "(Ljava/lang/Class;)Ljava/util/ServiceLoader;",
+                                "(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;"
+                        ).contains(min.desc)) {
+                            continue;
+                        }
+
+
+                        BasicValue arg;
+
+
+                        try {
+//                            int jd = 0;
+                            arg = getStackValue(mn.instructions.indexOf(min), 0, analyzer.getFrames());
+                            if (min.desc.equals("(Ljava/lang/Class;Ljava/lang/ClassLoader;)Ljava/util/ServiceLoader;")) {
+                                System.out.println("class loader detected");
+                            }
+                        } catch (AnalyzerException e) {
+                            throw new RuntimeException(e);
+                        }
+                        if (!(arg instanceof TypeValue value) || value.getType() == null) {
+                            System.err.println("Unknown ServiceLoader.load() invocation in: " + cn.name + "." + mn.name + mn.desc);
+                            continue;
+                        }
+
+                        LdcInsnNode ldc = value.getLdcNode();
+                        String spi = value.getType().getClassName();
+
+                        System.out.println(spi);
+                        directives.uses().add(spi);
+                    }
+                }
+
+                /*
                 cn.methods.forEach(method -> {
                     AbstractInsnNode[] lastTwoInstructions = new AbstractInsnNode[2];
                     int[] i = new int[]{0};
@@ -453,11 +507,22 @@ public class ClassPathPlugin extends AbstractPlugin {
 
                     });
                 });
+                 */
 
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
         });
+    }
+
+    // FIXME: copied from ClassForNamePlugin, need to refactor
+    private BasicValue getStackValue(int instructionIndex, int frameIndex, Frame<BasicValue>[] frames) throws AnalyzerException {
+        Frame<BasicValue> f = frames[instructionIndex];
+        if (f == null) {
+            return null;
+        }
+        int top = f.getStackSize() - 1;
+        return frameIndex <= top ? f.getStack(top - frameIndex) : null;
     }
 
     private byte[] compileModuleInfo(ModuleDescriptor descriptor, PatchedModuleDirectives directives) {
