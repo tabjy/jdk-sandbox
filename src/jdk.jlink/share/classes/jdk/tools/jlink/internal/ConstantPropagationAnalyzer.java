@@ -13,15 +13,15 @@ import jdk.internal.org.objectweb.asm.tree.analysis.Value;
 import jdk.tools.jlink.plugin.ResourcePool;
 
 import java.lang.constant.ClassDesc;
+import java.lang.constant.Constable;
 import java.lang.constant.ConstantDesc;
 import java.lang.constant.DirectMethodHandleDesc;
+import java.lang.constant.DynamicConstantDesc;
 import java.lang.constant.MethodHandleDesc;
 import java.lang.constant.MethodTypeDesc;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 public class ConstantPropagationAnalyzer {
 
@@ -101,102 +101,105 @@ public class ConstantPropagationAnalyzer {
         Optional<ConstantDesc> describe(ConstantDesc... args);
     }
 
-    private class TracableValueInterpreter extends Interpreter<TraceableValue> {
-        public static final Type NULL_TYPE = Type.getObjectType("null");
-        public static final Type STRING_TYPE = Type.getObjectType("java/lang/String");
-        public static final Type CLASS_TYPE = Type.getObjectType("java/lang/Class");
-        public static final Type METHOD_TYPE = Type.getObjectType("java/lang/invoke/MethodType");
-        public static final Type METHOD_HANDLE_TYPE = Type.getObjectType("java/lang/invoke/MethodHandle");
+    private class TracableValueInterpreter extends Interpreter<ConstableValue> {
+//        public static final Type NULL_TYPE = Type.getObjectType("null");
+//        public static final Type STRING_TYPE = Type.getObjectType("java/lang/String");
+//        public static final Type CLASS_TYPE = Type.getObjectType("java/lang/Class");
+//        public static final Type METHOD_TYPE = Type.getObjectType("java/lang/invoke/MethodType");
+//        public static final Type METHOD_HANDLE_TYPE = Type.getObjectType("java/lang/invoke/MethodHandle");
+
+        public static final ClassDesc NULL_CONSTANT_DESC = ClassDesc.of("null");
 
         protected TracableValueInterpreter(int api) {
             super(api);
         }
 
         @Override
-        public TraceableValue newValue(Type type) {
+        public ConstableValue newValue(Type type) {
             throw new UnsupportedOperationException("use specific operation methods");
         }
 
         @Override
-        public TraceableValue newOperation(AbstractInsnNode insn) throws AnalyzerException {
+        public ConstableValue newOperation(AbstractInsnNode insn) throws AnalyzerException {
             switch (insn.getOpcode()) {
                 case Opcodes.ACONST_NULL -> {
-                    return new TraceableValue(NULL_TYPE, null);
+                    return new ConstableValue(NULL_CONSTANT_DESC);
                 }
                 case Opcodes.ICONST_M1 -> {
-                    return new TraceableValue(Type.INT_TYPE, Optional.of(-1));
+                    return new ConstableValue((Constable) (-1));
                 }
                 case Opcodes.ICONST_0 -> {
-                    return new TraceableValue(Type.INT_TYPE, Optional.of(0));
+                    return new ConstableValue((Constable) 0);
                 }
                 case Opcodes.ICONST_1 -> {
-                    return new TraceableValue(Type.INT_TYPE, Optional.of(1));
+                    return new ConstableValue((Constable) 1);
                 }
                 case Opcodes.ICONST_2 -> {
-                    return new TraceableValue(Type.INT_TYPE, Optional.of(2));
+                    return new ConstableValue((Constable) 2);
                 }
                 case Opcodes.ICONST_3 -> {
-                    return new TraceableValue(Type.INT_TYPE, Optional.of(3));
+                    return new ConstableValue((Constable) 3);
                 }
                 case Opcodes.ICONST_4 -> {
-                    return new TraceableValue(Type.INT_TYPE, Optional.of(4));
+                    return new ConstableValue((Constable) 4);
                 }
                 case Opcodes.ICONST_5 -> {
-                    return new TraceableValue(Type.INT_TYPE, Optional.of(5));
+                    return new ConstableValue((Constable) 5);
                 }
                 case Opcodes.LCONST_0 -> {
-                    return new TraceableValue(Type.LONG_TYPE, Optional.of(0L));
+                    return new ConstableValue((Constable) 0L);
                 }
                 case Opcodes.LCONST_1 -> {
-                    return new TraceableValue(Type.LONG_TYPE, Optional.of(1L));
+                    return new ConstableValue((Constable) 1L);
                 }
                 case Opcodes.FCONST_0 -> {
-                    return new TraceableValue(Type.FLOAT_TYPE, Optional.of(0F));
+                    return new ConstableValue((Constable) 0F);
                 }
                 case Opcodes.FCONST_1 -> {
-                    return new TraceableValue(Type.FLOAT_TYPE, Optional.of(1F));
+                    return new ConstableValue((Constable) 1F);
                 }
                 case Opcodes.FCONST_2 -> {
-                    return new TraceableValue(Type.FLOAT_TYPE, Optional.of(2F));
+                    return new ConstableValue((Constable) 2F);
                 }
                 case Opcodes.DCONST_0 -> {
-                    return new TraceableValue(Type.DOUBLE_TYPE, Optional.of(0D));
+                    return new ConstableValue((Constable) 0D);
                 }
                 case Opcodes.DCONST_1 -> {
-                    return new TraceableValue(Type.DOUBLE_TYPE, Optional.of(1D));
+                    return new ConstableValue((Constable) 1D);
                 }
-                case Opcodes.BIPUSH -> {
-                    return new TraceableValue(Type.BYTE_TYPE, Optional.of((byte) ((IntInsnNode) insn).operand));
-                }
-                case Opcodes.SIPUSH -> {
-                    return new TraceableValue(Type.SHORT_TYPE, Optional.of((short) ((IntInsnNode) insn).operand));
+                case Opcodes.BIPUSH, Opcodes.SIPUSH -> {
+                    return new ConstableValue((Constable) ((IntInsnNode) insn).operand);
                 }
                 case Opcodes.LDC -> {
                     Object value = ((LdcInsnNode) insn).cst;
                     if (value instanceof Integer i) {
-                        return new TraceableValue(Type.INT_TYPE, Optional.of(i));
+                        return new ConstableValue((Constable) i);
                     } else if (value instanceof Float f) {
-                        return new TraceableValue(Type.FLOAT_TYPE, Optional.of(f));
+                        return new ConstableValue((Constable) f);
                     } else if (value instanceof Long l) {
-                        return new TraceableValue(Type.LONG_TYPE, Optional.of(l));
+                        return new ConstableValue((Constable) l);
                     } else if (value instanceof Double d) {
-                        return new TraceableValue(Type.DOUBLE_TYPE, Optional.of(d));
+                        return new ConstableValue((Constable) d);
                     } else if (value instanceof String s) {
-                        return new TraceableValue(STRING_TYPE, Optional.of(s));
+                        return new ConstableValue((Constable) s);
                     } else if (value instanceof Type t) {
                         int sort = t.getSort();
                         // FIXME: might as well use ConstantDesc al-together?
                         if (sort == Type.OBJECT || sort == Type.ARRAY) {
-                            return new TraceableValue(CLASS_TYPE, Optional.of(ClassDesc.ofDescriptor(t.getDescriptor())));
+                            return new ConstableValue(ClassDesc.of(t.getDescriptor()));
                         } else if (sort == Type.METHOD) {
                             // TODO: verify this is correct
-                            return new TraceableValue(METHOD_TYPE, Optional.of(MethodTypeDesc.ofDescriptor(t.getDescriptor())));
+                            return new ConstableValue(MethodTypeDesc.ofDescriptor(t.getDescriptor()));
                         } else {
                             throw new AnalyzerException(insn, "Illegal LDC value " + value);
                         }
-                    } else if (value instanceof Handle h) {
+                    } else if (value instanceof Handle || value instanceof ConstantDynamic) {
+                        Handle handle = value instanceof Handle
+                                ? (Handle) value
+                                : ((ConstantDynamic) value).getBootstrapMethod();
+
                         // TODO: is this remotely relevant to the purpose of constant propagation?
-                        DirectMethodHandleDesc.Kind kind = switch (((Handle) value).getTag()) {
+                        DirectMethodHandleDesc.Kind kind = switch (handle.getTag()) {
                             case Opcodes.H_GETFIELD -> DirectMethodHandleDesc.Kind.GETTER;
                             case Opcodes.H_GETSTATIC -> DirectMethodHandleDesc.Kind.STATIC_GETTER;
                             case Opcodes.H_PUTFIELD -> DirectMethodHandleDesc.Kind.SETTER;
@@ -206,18 +209,28 @@ public class ConstantPropagationAnalyzer {
                             case Opcodes.H_INVOKESPECIAL -> DirectMethodHandleDesc.Kind.SPECIAL;
                             case Opcodes.H_NEWINVOKESPECIAL -> DirectMethodHandleDesc.Kind.CONSTRUCTOR;
                             case Opcodes.H_INVOKEINTERFACE -> DirectMethodHandleDesc.Kind.INTERFACE_VIRTUAL;
-                            default ->
-                                    throw new AnalyzerException(insn, "Unexpected value: " + ((Handle) value).getTag());
+                            default -> throw new AnalyzerException(insn, "Unexpected value: " + handle.getTag());
                         };
 
-                        return new TraceableValue(METHOD_HANDLE_TYPE, Optional.of(MethodHandleDesc.ofMethod(
+                        DirectMethodHandleDesc handleDesc = MethodHandleDesc.ofMethod(
                                 kind,
-                                ClassDesc.ofInternalName(h.getOwner()),
-                                h.getName(),
-                                MethodTypeDesc.ofDescriptor(h.getDesc())
-                        )));
-                    } else if (value instanceof ConstantDynamic) {
-                        return newValue(Type.getType(((ConstantDynamic) value).getDescriptor()));
+                                ClassDesc.ofInternalName(handle.getOwner()),
+                                handle.getName(),
+                                MethodTypeDesc.ofDescriptor(handle.getDesc())
+                        );
+
+                        if (value instanceof Handle) {
+                            return new ConstableValue(handleDesc);
+                        }
+
+                        ConstantDesc[] arguments = new ConstantDesc[((ConstantDynamic) value)
+                                .getBootstrapMethodArgumentCount()];
+                        for (int i = 0; i < arguments.length; i++) {
+                            // TODO: conversion for Boolean, Char to Integer is probably needed
+                            arguments[i] = (ConstantDesc) ((ConstantDynamic) value).getBootstrapMethodArgument(i);
+                        }
+
+                        return new ConstableValue(DynamicConstantDesc.of(handleDesc, arguments));
                     } else {
                         throw new AnalyzerException(insn, "Illegal LDC value " + value);
                     }
@@ -228,144 +241,152 @@ public class ConstantPropagationAnalyzer {
         }
 
         @Override
-        public TraceableValue copyOperation(AbstractInsnNode insn, TraceableValue value) throws AnalyzerException {
-            return value;
+        public ConstableValue copyOperation(AbstractInsnNode insn, ConstableValue value) throws AnalyzerException {
+            return new ConstableValue(value);
         }
 
         @Override
-        public TraceableValue unaryOperation(AbstractInsnNode insn, TraceableValue value) throws AnalyzerException {
+        public ConstableValue unaryOperation(AbstractInsnNode insn, ConstableValue value) throws AnalyzerException {
             switch (insn.getOpcode()) {
+                // int results
                 case Opcodes.INEG -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> -1 * (Integer) values[0]);
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) i * -1));
                 }
                 case Opcodes.IINC -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> (Integer) values[0] + 1);
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) i + 1));
                 }
                 case Opcodes.L2I -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> ((Long) values[0]).intValue());
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((l) -> (int) (long) l));
                 }
                 case Opcodes.F2I -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> ((Float) values[0]).intValue());
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((f) -> (int) (float) f));
                 }
                 case Opcodes.D2I -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> ((Double) values[0]).intValue());
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((d) -> (int) (double) d));
                 }
                 case Opcodes.I2B -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> ((Integer) values[0]).byteValue());
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) (byte) (int) i));
                 }
                 case Opcodes.I2C -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> (char) ((Integer) values[0]).intValue());
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) (char) (int) i));
                 }
                 case Opcodes.I2S -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> ((Integer) values[0]).shortValue());
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) (short) (int) i));
                 }
+                // float results
                 case Opcodes.FNEG -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> -1 * (Float) values[0]);
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((f) -> (float) f * -1));
                 }
                 case Opcodes.I2F -> {
-                    return new TraceableValue(Type.INT_TYPE, List.of(value), (values) -> ((Integer) values[0]).floatValue());
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (float) (int) i));
                 }
+                case Opcodes.L2F -> {
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (float) (long) i));
+                }
+                case Opcodes.D2F -> {
+                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (float) (double) i));
+                }
+                // TODO
             }
 
             return null;
         }
 
-        @Override
-        public TraceableValue binaryOperation(AbstractInsnNode insn, TraceableValue value1, TraceableValue value2) throws AnalyzerException {
-            return null;
-        }
-
-        @Override
-        public TraceableValue ternaryOperation(AbstractInsnNode insn, TraceableValue value1, TraceableValue value2, TraceableValue value3) throws AnalyzerException {
-            return null;
-        }
-
-        @Override
-        public TraceableValue naryOperation(AbstractInsnNode insn, List<? extends TraceableValue> values) throws AnalyzerException {
-            return null;
-        }
-
-        @Override
-        public void returnOperation(AbstractInsnNode insn, TraceableValue value, TraceableValue expected) throws AnalyzerException {
-
-        }
-
-        @Override
-        public TraceableValue merge(TraceableValue value1, TraceableValue value2) {
-            return null;
-        }
+//        @Override
+//        public TraceableValue binaryOperation(AbstractInsnNode insn, TraceableValue value1, TraceableValue value2) throws AnalyzerException {
+//            return null;
+//        }
+//
+//        @Override
+//        public TraceableValue ternaryOperation(AbstractInsnNode insn, TraceableValue value1, TraceableValue value2, TraceableValue value3) throws AnalyzerException {
+//            return null;
+//        }
+//
+//        @Override
+//        public TraceableValue naryOperation(AbstractInsnNode insn, List<? extends TraceableValue> values) throws AnalyzerException {
+//            return null;
+//        }
+//
+//        @Override
+//        public void returnOperation(AbstractInsnNode insn, TraceableValue value, TraceableValue expected) throws AnalyzerException {
+//
+//        }
+//
+//        @Override
+//        public TraceableValue merge(TraceableValue value1, TraceableValue value2) {
+//            return null;
+//        }
     }
 
-    private static class TraceableValue implements Value {
-        private final Type type;
-        private Optional<Object> constant; // FIXME: we currently use Optional to distinguish between null and empty. Is
-                                           //        this considered an anti-pattern?
-                                           //        We need something like ConstantDesc, but it is too sealed for
-                                           //        extension.
+    private static class ConstableValue implements Value, Constable {
+        private final int size;
+        private ConstantDesc constantDesc;
+        private final List<Constable> sources;
+        private final ConstableValueDescriber describer;
 
-        private final List<TraceableValue> sources;
-        private final TraceableValueFunction function;
-
-        public TraceableValue(final Type type) {
-            this(type, Optional.empty(), List.of(), null);
+        public ConstableValue(int size) {
+            this(size, null, List.of(), null);
         }
 
-        public TraceableValue(final Type type, Optional<Object> constant) {
-            this(type, constant, List.of(), null);
-            Objects.requireNonNull(constant);
+        public ConstableValue(ConstantDesc constantDesc) {
+            this(-1, constantDesc, List.of(), null);
+
+            Objects.requireNonNull(constantDesc);
         }
 
-        public TraceableValue(final Type type, List<TraceableValue> sources, TraceableValueFunction function) {
-            this(type, Optional.empty(), sources, function);
+        public ConstableValue(Constable source) {
+            this(List.of(source), (values) -> {
+                if (values[0].isEmpty()) {
+                    return Optional.empty();
+                }
+                return values[0].get().describeConstable();
+            });
+        }
+
+        public ConstableValue(List<Constable> sources, ConstableValueDescriber describer) {
+            this(-1, null, sources, describer);
+
             Objects.requireNonNull(sources);
-            Objects.requireNonNull(function);
-
-            computeFromSource();
+            sources.forEach(Objects::requireNonNull);
+            Objects.requireNonNull(describer);
         }
 
-        private TraceableValue(final Type type, Optional<Object> constant, List<TraceableValue> sources, TraceableValueFunction function) {
-            Objects.requireNonNull(type);
+        private ConstableValue(int size, ConstantDesc constantDesc, List<Constable> sources, ConstableValueDescriber describer) {
+            if (size == -1) {
+                Objects.requireNonNull(constantDesc);
+                size = constantDesc instanceof Long || constantDesc instanceof Double ? 2 : 1;
+            }
 
-            // TODO: how to inference type from sources?
-            this.type = type;
-            this.constant = constant;
+            this.size = size;
+            this.constantDesc = constantDesc;
             this.sources = sources;
-            this.function = function;
+            this.describer = describer;
         }
 
         @Override
         public int getSize() {
-            return type == Type.LONG_TYPE || type == Type.DOUBLE_TYPE ? 2 : 1;
+            return size;
         }
 
-        private boolean computeFromSource() {
-            if (function == null) {
-                throw new IllegalStateException("Cannot compute from source without a function");
+        @Override
+        public Optional<? extends ConstantDesc> describeConstable() {
+            if (constantDesc != null) {
+                return Optional.of(constantDesc);
             }
 
-            if (!sources.stream().map(TraceableValue::getConstant).allMatch(Optional::isPresent)) {
-                return false;
-            }
-
-            constant = Optional.ofNullable(function.apply(sources.stream().map(TraceableValue::getConstant).map(Optional::get)
-                    .toArray()));
-            return true;
-        }
-
-        public Optional<Object> getConstant() {
-            if (constant.isPresent()) {
-                return constant;
-            }
-
-            if (computeFromSource()) {
-                return constant;
+            if (describer != null) {
+                // FIXME: toArray() causes generic typing information erased
+                constantDesc = ((Optional<? extends ConstantDesc>) describer.describe(
+                        sources.stream().map(Constable::describeConstable).toArray(Optional[]::new)
+                )).orElse(null);
+                return Optional.ofNullable(constantDesc);
             }
 
             return Optional.empty();
         }
     }
 
-    private interface TraceableValueFunction {
-        Object apply(Object... sources);
+    private interface ConstableValueDescriber {
+        Optional<? extends ConstantDesc> describe(Optional<Constable>... sources);
     }
 }
