@@ -5,6 +5,7 @@ import jdk.internal.org.objectweb.asm.Handle;
 import jdk.internal.org.objectweb.asm.Opcodes;
 import jdk.internal.org.objectweb.asm.Type;
 import jdk.internal.org.objectweb.asm.tree.AbstractInsnNode;
+import jdk.internal.org.objectweb.asm.tree.FieldInsnNode;
 import jdk.internal.org.objectweb.asm.tree.IntInsnNode;
 import jdk.internal.org.objectweb.asm.tree.LdcInsnNode;
 import jdk.internal.org.objectweb.asm.tree.analysis.AnalyzerException;
@@ -22,6 +23,7 @@ import java.lang.constant.MethodTypeDesc;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 public class ConstantPropagationAnalyzer {
 
@@ -121,181 +123,294 @@ public class ConstantPropagationAnalyzer {
 
         @Override
         public ConstableValue newOperation(AbstractInsnNode insn) throws AnalyzerException {
-            switch (insn.getOpcode()) {
-                case Opcodes.ACONST_NULL -> {
-                    return new ConstableValue(NULL_CONSTANT_DESC);
-                }
-                case Opcodes.ICONST_M1 -> {
-                    return new ConstableValue((Constable) (-1));
-                }
-                case Opcodes.ICONST_0 -> {
-                    return new ConstableValue((Constable) 0);
-                }
-                case Opcodes.ICONST_1 -> {
-                    return new ConstableValue((Constable) 1);
-                }
-                case Opcodes.ICONST_2 -> {
-                    return new ConstableValue((Constable) 2);
-                }
-                case Opcodes.ICONST_3 -> {
-                    return new ConstableValue((Constable) 3);
-                }
-                case Opcodes.ICONST_4 -> {
-                    return new ConstableValue((Constable) 4);
-                }
-                case Opcodes.ICONST_5 -> {
-                    return new ConstableValue((Constable) 5);
-                }
-                case Opcodes.LCONST_0 -> {
-                    return new ConstableValue((Constable) 0L);
-                }
-                case Opcodes.LCONST_1 -> {
-                    return new ConstableValue((Constable) 1L);
-                }
-                case Opcodes.FCONST_0 -> {
-                    return new ConstableValue((Constable) 0F);
-                }
-                case Opcodes.FCONST_1 -> {
-                    return new ConstableValue((Constable) 1F);
-                }
-                case Opcodes.FCONST_2 -> {
-                    return new ConstableValue((Constable) 2F);
-                }
-                case Opcodes.DCONST_0 -> {
-                    return new ConstableValue((Constable) 0D);
-                }
-                case Opcodes.DCONST_1 -> {
-                    return new ConstableValue((Constable) 1D);
-                }
-                case Opcodes.BIPUSH, Opcodes.SIPUSH -> {
-                    return new ConstableValue((Constable) ((IntInsnNode) insn).operand);
-                }
-                case Opcodes.LDC -> {
-                    Object value = ((LdcInsnNode) insn).cst;
-                    if (value instanceof Integer i) {
-                        return new ConstableValue((Constable) i);
-                    } else if (value instanceof Float f) {
-                        return new ConstableValue((Constable) f);
-                    } else if (value instanceof Long l) {
-                        return new ConstableValue((Constable) l);
-                    } else if (value instanceof Double d) {
-                        return new ConstableValue((Constable) d);
-                    } else if (value instanceof String s) {
-                        return new ConstableValue((Constable) s);
-                    } else if (value instanceof Type t) {
-                        int sort = t.getSort();
-                        // FIXME: might as well use ConstantDesc al-together?
-                        if (sort == Type.OBJECT || sort == Type.ARRAY) {
-                            return new ConstableValue(ClassDesc.of(t.getDescriptor()));
-                        } else if (sort == Type.METHOD) {
-                            // TODO: verify this is correct
-                            return new ConstableValue(MethodTypeDesc.ofDescriptor(t.getDescriptor()));
-                        } else {
-                            throw new AnalyzerException(insn, "Illegal LDC value " + value);
-                        }
-                    } else if (value instanceof Handle || value instanceof ConstantDynamic) {
-                        Handle handle = value instanceof Handle
-                                ? (Handle) value
-                                : ((ConstantDynamic) value).getBootstrapMethod();
-
-                        // TODO: is this remotely relevant to the purpose of constant propagation?
-                        DirectMethodHandleDesc.Kind kind = switch (handle.getTag()) {
-                            case Opcodes.H_GETFIELD -> DirectMethodHandleDesc.Kind.GETTER;
-                            case Opcodes.H_GETSTATIC -> DirectMethodHandleDesc.Kind.STATIC_GETTER;
-                            case Opcodes.H_PUTFIELD -> DirectMethodHandleDesc.Kind.SETTER;
-                            case Opcodes.H_PUTSTATIC -> DirectMethodHandleDesc.Kind.STATIC_SETTER;
-                            case Opcodes.H_INVOKEVIRTUAL -> DirectMethodHandleDesc.Kind.VIRTUAL;
-                            case Opcodes.H_INVOKESTATIC -> DirectMethodHandleDesc.Kind.STATIC;
-                            case Opcodes.H_INVOKESPECIAL -> DirectMethodHandleDesc.Kind.SPECIAL;
-                            case Opcodes.H_NEWINVOKESPECIAL -> DirectMethodHandleDesc.Kind.CONSTRUCTOR;
-                            case Opcodes.H_INVOKEINTERFACE -> DirectMethodHandleDesc.Kind.INTERFACE_VIRTUAL;
-                            default -> throw new AnalyzerException(insn, "Unexpected value: " + handle.getTag());
-                        };
-
-                        DirectMethodHandleDesc handleDesc = MethodHandleDesc.ofMethod(
-                                kind,
-                                ClassDesc.ofInternalName(handle.getOwner()),
-                                handle.getName(),
-                                MethodTypeDesc.ofDescriptor(handle.getDesc())
-                        );
-
-                        if (value instanceof Handle) {
-                            return new ConstableValue(handleDesc);
-                        }
-
-                        ConstantDesc[] arguments = new ConstantDesc[((ConstantDynamic) value)
-                                .getBootstrapMethodArgumentCount()];
-                        for (int i = 0; i < arguments.length; i++) {
-                            // TODO: conversion for Boolean, Char to Integer is probably needed
-                            arguments[i] = (ConstantDesc) ((ConstantDynamic) value).getBootstrapMethodArgument(i);
-                        }
-
-                        return new ConstableValue(DynamicConstantDesc.of(handleDesc, arguments));
+            if (insn.getOpcode() == Opcodes.LDC) {
+                Object value = ((LdcInsnNode) insn).cst;
+                if (value instanceof Integer i) {
+                    return new ConstableValue(i);
+                } else if (value instanceof Float f) {
+                    return new ConstableValue(f);
+                } else if (value instanceof Long l) {
+                    return new ConstableValue(l);
+                } else if (value instanceof Double d) {
+                    return new ConstableValue(d);
+                } else if (value instanceof String s) {
+                    return new ConstableValue(s);
+                } else if (value instanceof Type t) {
+                    int sort = t.getSort();
+                    // FIXME: might as well use ConstantDesc al-together?
+                    if (sort == Type.OBJECT || sort == Type.ARRAY) {
+                        return new ConstableValue(ClassDesc.of(t.getDescriptor()));
+                    } else if (sort == Type.METHOD) {
+                        // TODO: verify this is correct
+                        return new ConstableValue(MethodTypeDesc.ofDescriptor(t.getDescriptor()));
                     } else {
                         throw new AnalyzerException(insn, "Illegal LDC value " + value);
                     }
+                } else if (value instanceof Handle || value instanceof ConstantDynamic) {
+                    Handle handle = value instanceof Handle
+                            ? (Handle) value
+                            : ((ConstantDynamic) value).getBootstrapMethod();
+
+                    // TODO: is this remotely relevant to the purpose of constant propagation?
+                    DirectMethodHandleDesc.Kind kind = switch (handle.getTag()) {
+                        case Opcodes.H_GETFIELD -> DirectMethodHandleDesc.Kind.GETTER;
+                        case Opcodes.H_GETSTATIC -> DirectMethodHandleDesc.Kind.STATIC_GETTER;
+                        case Opcodes.H_PUTFIELD -> DirectMethodHandleDesc.Kind.SETTER;
+                        case Opcodes.H_PUTSTATIC -> DirectMethodHandleDesc.Kind.STATIC_SETTER;
+                        case Opcodes.H_INVOKEVIRTUAL -> DirectMethodHandleDesc.Kind.VIRTUAL;
+                        case Opcodes.H_INVOKESTATIC -> DirectMethodHandleDesc.Kind.STATIC;
+                        case Opcodes.H_INVOKESPECIAL -> DirectMethodHandleDesc.Kind.SPECIAL;
+                        case Opcodes.H_NEWINVOKESPECIAL -> DirectMethodHandleDesc.Kind.CONSTRUCTOR;
+                        case Opcodes.H_INVOKEINTERFACE -> DirectMethodHandleDesc.Kind.INTERFACE_VIRTUAL;
+                        default -> throw new AnalyzerException(insn, "Unexpected value: " + handle.getTag());
+                    };
+
+                    DirectMethodHandleDesc handleDesc = MethodHandleDesc.ofMethod(
+                            kind,
+                            ClassDesc.ofInternalName(handle.getOwner()),
+                            handle.getName(),
+                            MethodTypeDesc.ofDescriptor(handle.getDesc())
+                    );
+
+                    if (value instanceof Handle) {
+                        return new ConstableValue(handleDesc);
+                    }
+
+                    ConstantDesc[] arguments = new ConstantDesc[((ConstantDynamic) value)
+                            .getBootstrapMethodArgumentCount()];
+                    for (int i = 0; i < arguments.length; i++) {
+                        // TODO: conversion for Boolean, Char to Integer is probably needed
+                        arguments[i] = (ConstantDesc) ((ConstantDynamic) value).getBootstrapMethodArgument(i);
+                    }
+
+                    return new ConstableValue(DynamicConstantDesc.of(handleDesc, arguments));
                 }
+                throw new AnalyzerException(insn, "Illegal LDC value " + value);
             }
 
-            throw new AssertionError();
+            if (insn.getOpcode() == Opcodes.ACONST_NULL) {
+                return new ConstableValue(NULL_CONSTANT_DESC);
+            }
+
+            if (insn.getOpcode() == Opcodes.JSR) {
+                return new ConstableValue(1);
+            }
+
+            if (insn.getOpcode() == Opcodes.GETSTATIC) {
+                // TODO: figure out whether we want array accesses in constant folding
+                return new ConstableValue(Type.getType(((FieldInsnNode) insn).desc).getSize());
+            }
+
+            if (insn.getOpcode() == Opcodes.NEW) {
+                // TODO: figure out whether we want field access and instance method invocation in constant folding
+                return new ConstableValue(1);
+            }
+
+            return new ConstableValue(switch (insn.getOpcode()) {
+                case Opcodes.ICONST_M1 -> -1;
+                case Opcodes.ICONST_0 -> 0;
+                case Opcodes.ICONST_1 -> 1;
+                case Opcodes.ICONST_2 -> 2;
+                case Opcodes.ICONST_3 -> 3;
+                case Opcodes.ICONST_4 -> 4;
+                case Opcodes.ICONST_5 -> 5;
+                case Opcodes.LCONST_0 -> 0L;
+                case Opcodes.LCONST_1 -> 1L;
+                case Opcodes.FCONST_0 -> 0F;
+                case Opcodes.FCONST_1 -> 1F;
+                case Opcodes.FCONST_2 -> 2F;
+                case Opcodes.DCONST_0 -> 0D;
+                case Opcodes.DCONST_1 -> 1D;
+                case Opcodes.BIPUSH, Opcodes.SIPUSH -> ((IntInsnNode) insn).operand;
+                default -> throw new AssertionError();
+            });
         }
 
         @Override
         public ConstableValue copyOperation(AbstractInsnNode insn, ConstableValue value) throws AnalyzerException {
-            return new ConstableValue(value);
+            // ILOAD, LLOAD, FLOAD, DLOAD, ALOAD, ISTORE, LSTORE, FSTORE, DSTORE, ASTORE, DUP, DUP_X1, DUP_X2, DUP2,
+            // DUP2_X1, DUP2_X2, SWAP
+//            return value;
+            return new ConstableValue(1, value);
         }
 
         @Override
         public ConstableValue unaryOperation(AbstractInsnNode insn, ConstableValue value) throws AnalyzerException {
-            switch (insn.getOpcode()) {
-                // int results
-                case Opcodes.INEG -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) i * -1));
-                }
-                case Opcodes.IINC -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) i + 1));
-                }
-                case Opcodes.L2I -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((l) -> (int) (long) l));
-                }
-                case Opcodes.F2I -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((f) -> (int) (float) f));
-                }
-                case Opcodes.D2I -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((d) -> (int) (double) d));
-                }
-                case Opcodes.I2B -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) (byte) (int) i));
-                }
-                case Opcodes.I2C -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) (char) (int) i));
-                }
-                case Opcodes.I2S -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (int) (short) (int) i));
-                }
-                // float results
-                case Opcodes.FNEG -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((f) -> (float) f * -1));
-                }
-                case Opcodes.I2F -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (float) (int) i));
-                }
-                case Opcodes.L2F -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (float) (long) i));
-                }
-                case Opcodes.D2F -> {
-                    return new ConstableValue(List.of(value), (values) -> values[0].map((i) -> (float) (double) i));
-                }
-                // TODO
-            }
+            return switch (insn.getOpcode()) {
+                // void results
+                case Opcodes.IFEQ,
+                        Opcodes.IFNE,
+                        Opcodes.FRETURN,
+                        Opcodes.IFLT,
+                        Opcodes.IFGE,
+                        Opcodes.IFGT,
+                        Opcodes.IFLE,
+                        Opcodes.TABLESWITCH,
+                        Opcodes.LOOKUPSWITCH,
+                        Opcodes.IRETURN,
+                        Opcodes.LRETURN,
+                        Opcodes.DRETURN,
+                        Opcodes.ARETURN,
+                        Opcodes.PUTSTATIC,
+                        Opcodes.ATHROW,
+                        Opcodes.MONITORENTER,
+                        Opcodes.MONITOREXIT,
+                        Opcodes.IFNULL,
+                        Opcodes.IFNONNULL -> null;
 
-            return null;
+                // int results
+                case Opcodes.INEG ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) v * -1));
+                case Opcodes.IINC ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) v + 1));
+                case Opcodes.L2I ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (long) v));
+                case Opcodes.F2I ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (float) v));
+                case Opcodes.D2I ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (double) v));
+                case Opcodes.I2B ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (byte) (int) v));
+                case Opcodes.I2C ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (char) (int) v));
+                case Opcodes.I2S ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (short) (int) v));
+                case Opcodes.ARRAYLENGTH -> // TODO: figure out whether we want array accesses in constant folding
+                        new ConstableValue(1);
+
+                // long results
+                case Opcodes.LNEG ->
+                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (long) v * -1));
+                case Opcodes.I2L ->
+                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (long) (int) v));
+                case Opcodes.F2L ->
+                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (long) (float) v));
+                case Opcodes.D2L ->
+                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (long) (double) v));
+
+                // float results
+                case Opcodes.FNEG ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (float) v * -1));
+                case Opcodes.I2F ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (float) (int) v));
+                case Opcodes.L2F ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (float) (long) v));
+                case Opcodes.D2F ->
+                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (float) (double) v));
+
+                // double results
+                case Opcodes.DNEG ->
+                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (double) v * -1));
+                case Opcodes.I2D ->
+                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (double) (int) v));
+                case Opcodes.L2D ->
+                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (double) (long) v));
+                case Opcodes.F2D ->
+                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (double) (float) v));
+
+                // get field
+                // TODO: figure out whether we want field access in constant folding
+                case Opcodes.GETFIELD -> new ConstableValue(Type.getType(((FieldInsnNode) insn).desc).getSize());
+
+                // array creation
+                // TODO: figure out whether we want array accesses in constant folding
+                case Opcodes.NEWARRAY, Opcodes.ANEWARRAY -> new ConstableValue(1);
+
+
+                // reference type casting
+                // TODO: determine actual typing at compile time if possible
+                case Opcodes.CHECKCAST -> new ConstableValue(1);
+                default -> throw new AssertionError();
+            };
         }
 
-//        @Override
-//        public TraceableValue binaryOperation(AbstractInsnNode insn, TraceableValue value1, TraceableValue value2) throws AnalyzerException {
-//            return null;
-//        }
+        @Override
+        public ConstableValue binaryOperation(AbstractInsnNode insn, ConstableValue value1, ConstableValue value2) throws AnalyzerException {
+            return switch (insn.getOpcode()) {
+                // void results
+                case Opcodes.IF_ICMPEQ,
+                        Opcodes.IF_ICMPNE,
+                        Opcodes.IF_ICMPLT,
+                        Opcodes.IF_ICMPGE,
+                        Opcodes.IF_ICMPGT,
+                        Opcodes.IF_ICMPLE,
+                        Opcodes.IF_ACMPEQ,
+                        Opcodes.IF_ACMPNE,
+                        Opcodes.PUTFIELD -> null;
+
+                // array operations
+                // TODO: figure out whether we want array accesses in constant folding
+                case Opcodes.AALOAD,
+                        Opcodes.BALOAD,
+                        Opcodes.CALOAD,
+                        Opcodes.FALOAD,
+                        Opcodes.IALOAD,
+                        Opcodes.SALOAD -> new ConstableValue(1);
+                case Opcodes.LALOAD,
+                        Opcodes.DALOAD -> new ConstableValue(2);
+
+                // integer arithmetics
+                case Opcodes.IADD ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() + (int) values[1].get())
+                                        : Optional.empty());
+                case Opcodes.ISUB ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() - (int) values[1].get())
+                                        : Optional.empty());
+                case Opcodes.IMUL ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() * (int) values[1].get())
+                                        : Optional.empty());
+                case Opcodes.IDIV ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() / (int) values[1].get())
+                                        : Optional.empty());
+                case Opcodes.IREM ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() % (int) values[1].get())
+                                        : Optional.empty());
+                case Opcodes.ISHL ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() << (int) values[1].get())
+                                        : Optional.empty());
+                case Opcodes.ISHR ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                        Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                ? Optional.of((int) values[0].get() >> (int) values[1].get())
+                                : Optional.empty());
+                case Opcodes.IUSHR ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() >>> (int) values[1].get())
+                                        : Optional.empty());
+                case Opcodes.IAND ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() & (int) values[1].get())
+                                        : Optional.empty());
+                case Opcodes.IOR ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() | (int) values[1].get())
+                                        : Optional.empty());
+                case Opcodes.IXOR ->
+                        new ConstableValue(1, List.of(value1, value2), (values) ->
+                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                                        ? Optional.of((int) values[0].get() ^ (int) values[1].get())
+                                        : Optional.empty());
+
+                // TODO
+
+                default -> throw new AssertionError();
+            };
+        }
 //
 //        @Override
 //        public TraceableValue ternaryOperation(AbstractInsnNode insn, TraceableValue value1, TraceableValue value2, TraceableValue value3) throws AnalyzerException {
@@ -334,8 +449,8 @@ public class ConstantPropagationAnalyzer {
             Objects.requireNonNull(constantDesc);
         }
 
-        public ConstableValue(Constable source) {
-            this(List.of(source), (values) -> {
+        public ConstableValue(int size, Constable source) {
+            this(size, List.of(source), (values) -> {
                 if (values[0].isEmpty()) {
                     return Optional.empty();
                 }
@@ -343,8 +458,8 @@ public class ConstantPropagationAnalyzer {
             });
         }
 
-        public ConstableValue(List<Constable> sources, ConstableValueDescriber describer) {
-            this(-1, null, sources, describer);
+        public ConstableValue(int size, List<Constable> sources, ConstableValueDescriber describer) {
+            this(size, null, sources, describer);
 
             Objects.requireNonNull(sources);
             sources.forEach(Objects::requireNonNull);
