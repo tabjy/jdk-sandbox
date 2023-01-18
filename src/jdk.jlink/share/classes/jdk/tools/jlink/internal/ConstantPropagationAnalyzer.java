@@ -23,6 +23,8 @@ import java.lang.constant.MethodTypeDesc;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 public class ConstantPropagationAnalyzer {
@@ -259,54 +261,34 @@ public class ConstantPropagationAnalyzer {
                         Opcodes.IFNONNULL -> null;
 
                 // int results
-                case Opcodes.INEG ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) v * -1));
-                case Opcodes.IINC ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) v + 1));
-                case Opcodes.L2I ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (long) v));
-                case Opcodes.F2I ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (float) v));
-                case Opcodes.D2I ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (double) v));
-                case Opcodes.I2B ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (byte) (int) v));
-                case Opcodes.I2C ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (char) (int) v));
-                case Opcodes.I2S ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (int) (short) (int) v));
-                case Opcodes.ARRAYLENGTH -> // TODO: figure out whether we want array accesses in constant folding
-                        new ConstableValue(1);
+                case Opcodes.INEG -> new ConstableValue(1, value, (v -> (int) v * -1));
+                case Opcodes.IINC -> new ConstableValue(1, value, (v -> (int) v + 1));
+                case Opcodes.L2I -> new ConstableValue(1, value, (v -> (int) (long) v));
+                case Opcodes.F2I -> new ConstableValue(1, value, (v -> (int) (float) v));
+                case Opcodes.D2I -> new ConstableValue(1, value, (v -> (int) (double) v));
+                case Opcodes.I2B -> new ConstableValue(1, value, (v -> (int) (byte) (int) v));
+                case Opcodes.I2C -> new ConstableValue(1, value, (v -> (int) (char) (int) v));
+                case Opcodes.I2S -> new ConstableValue(1, value, (v -> (int) (short) (int) v));
+                // TODO: figure out whether we want array accesses in constant folding
+                case Opcodes.ARRAYLENGTH -> new ConstableValue(1);
 
                 // long results
-                case Opcodes.LNEG ->
-                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (long) v * -1));
-                case Opcodes.I2L ->
-                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (long) (int) v));
-                case Opcodes.F2L ->
-                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (long) (float) v));
-                case Opcodes.D2L ->
-                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (long) (double) v));
+                case Opcodes.LNEG -> new ConstableValue(2, value, (v -> (long) v * -1));
+                case Opcodes.I2L -> new ConstableValue(2, value, (v -> (long) (int) v));
+                case Opcodes.F2L -> new ConstableValue(2, value, (v -> (long) (float) v));
+                case Opcodes.D2L -> new ConstableValue(2, value, (v -> (long) (double) v));
 
                 // float results
-                case Opcodes.FNEG ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (float) v * -1));
-                case Opcodes.I2F ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (float) (int) v));
-                case Opcodes.L2F ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (float) (long) v));
-                case Opcodes.D2F ->
-                        new ConstableValue(1, List.of(value), (values) -> values[0].map((v) -> (float) (double) v));
+                case Opcodes.FNEG -> new ConstableValue(1, value, (v -> (float) v * -1));
+                case Opcodes.I2F -> new ConstableValue(1, value, (v -> (float) (int) v));
+                case Opcodes.L2F -> new ConstableValue(1, value, (v -> (float) (long) v));
+                case Opcodes.D2F -> new ConstableValue(1, value, (v -> (float) (double) v));
 
                 // double results
-                case Opcodes.DNEG ->
-                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (double) v * -1));
-                case Opcodes.I2D ->
-                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (double) (int) v));
-                case Opcodes.L2D ->
-                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (double) (long) v));
-                case Opcodes.F2D ->
-                        new ConstableValue(2, List.of(value), (values) -> values[0].map((v) -> (double) (float) v));
+                case Opcodes.DNEG -> new ConstableValue(2, value, (v -> (double) v * -1));
+                case Opcodes.I2D -> new ConstableValue(2, value, (v -> (double) (int) v));
+                case Opcodes.L2D -> new ConstableValue(2, value, (v -> (double) (long) v));
+                case Opcodes.F2D -> new ConstableValue(2, value, (v -> (double) (float) v));
 
                 // get field
                 // TODO: figure out whether we want field access in constant folding
@@ -350,63 +332,64 @@ public class ConstantPropagationAnalyzer {
                         Opcodes.DALOAD -> new ConstableValue(2);
 
                 // integer arithmetics
-                case Opcodes.IADD ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() + (int) values[1].get())
-                                        : Optional.empty());
-                case Opcodes.ISUB ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() - (int) values[1].get())
-                                        : Optional.empty());
-                case Opcodes.IMUL ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() * (int) values[1].get())
-                                        : Optional.empty());
-                case Opcodes.IDIV ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() / (int) values[1].get())
-                                        : Optional.empty());
-                case Opcodes.IREM ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() % (int) values[1].get())
-                                        : Optional.empty());
-                case Opcodes.ISHL ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() << (int) values[1].get())
-                                        : Optional.empty());
-                case Opcodes.ISHR ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                        Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                ? Optional.of((int) values[0].get() >> (int) values[1].get())
-                                : Optional.empty());
-                case Opcodes.IUSHR ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() >>> (int) values[1].get())
-                                        : Optional.empty());
-                case Opcodes.IAND ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() & (int) values[1].get())
-                                        : Optional.empty());
-                case Opcodes.IOR ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() | (int) values[1].get())
-                                        : Optional.empty());
-                case Opcodes.IXOR ->
-                        new ConstableValue(1, List.of(value1, value2), (values) ->
-                                Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
-                                        ? Optional.of((int) values[0].get() ^ (int) values[1].get())
-                                        : Optional.empty());
+                case Opcodes.IADD -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 + (int) v2);
+                case Opcodes.ISUB -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 - (int) v2);
+                case Opcodes.IMUL -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 * (int) v2);
+                case Opcodes.IDIV -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 / (int) v2);
+                case Opcodes.IREM -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 % (int) v2);
+                case Opcodes.ISHL -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 << (int) v2);
+                case Opcodes.ISHR -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 >> (int) v2);
+                case Opcodes.IUSHR -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 >>> (int) v2);
+                case Opcodes.IAND -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 & (int) v2);
+                case Opcodes.IOR -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 | (int) v2);
+                case Opcodes.IXOR -> new ConstableValue(1, value1, value2, (v1, v2) -> (int) v1 ^ (int) v2);
 
-                // TODO
+                // float arithmetics
+                case Opcodes.FADD -> new ConstableValue(1, value1, value2, (v1, v2) -> (float) v1 + (float) v2);
+                case Opcodes.FSUB -> new ConstableValue(1, value1, value2, (v1, v2) -> (float) v1 - (float) v2);
+                case Opcodes.FMUL -> new ConstableValue(1, value1, value2, (v1, v2) -> (float) v1 * (float) v2);
+                case Opcodes.FDIV -> new ConstableValue(1, value1, value2, (v1, v2) -> (float) v1 / (float) v2);
+                case Opcodes.FREM -> new ConstableValue(1, value1, value2, (v1, v2) -> (float) v1 % (float) v2);
+
+                // long arithmetics
+                case Opcodes.LADD -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 + (long) v2);
+                case Opcodes.LSUB -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 - (long) v2);
+                case Opcodes.LMUL -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 * (long) v2);
+                case Opcodes.LDIV -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 / (long) v2);
+                case Opcodes.LREM -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 % (long) v2);
+                case Opcodes.LSHL -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 << (long) v2);
+                case Opcodes.LSHR -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 >> (long) v2);
+                case Opcodes.LUSHR -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 >>> (long) v2);
+                case Opcodes.LAND -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 & (long) v2);
+                case Opcodes.LOR -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 | (long) v2);
+                case Opcodes.LXOR -> new ConstableValue(2, value1, value2, (v1, v2) -> (long) v1 ^ (long) v2);
+
+                // double arithmetics
+                case Opcodes.DADD -> new ConstableValue(2, value1, value2, (v1, v2) -> (double) v1 + (double) v2);
+                case Opcodes.DSUB -> new ConstableValue(2, value1, value2, (v1, v2) -> (double) v1 - (double) v2);
+                case Opcodes.DMUL -> new ConstableValue(2, value1, value2, (v1, v2) -> (double) v1 * (double) v2);
+                case Opcodes.DDIV -> new ConstableValue(2, value1, value2, (v1, v2) -> (double) v1 / (double) v2);
+                case Opcodes.DREM -> new ConstableValue(2, value1, value2, (v1, v2) -> (double) v1 % (double) v2);
+
+                // comparisons
+                case Opcodes.LCMP -> new ConstableValue(1, value1, value2, (v1, v2) ->
+                        Long.compare((long) v1, (long) v2));
+                case Opcodes.FCMPL -> new ConstableValue(1, value1, value2, (v1, v2) ->
+                        Float.isNaN((float) v1) || Float.isNaN((float) v2)
+                                ? -1
+                                : Float.compare((float) v1, (float) v2));
+                case Opcodes.FCMPG -> new ConstableValue(1, value1, value2, (v1, v2) ->
+                        Float.isNaN((float) v1) || Float.isNaN((float) v2)
+                                ? 1
+                                : Float.compare((float) v1, (float) v2));
+                case Opcodes.DCMPL -> new ConstableValue(1, value1, value2, (v1, v2) ->
+                        Double.isNaN((double) v1) || Double.isNaN((double) v2)
+                                ? -1
+                                : Float.compare((float) v1, (float) v2));
+                case Opcodes.DCMPG -> new ConstableValue(1, value1, value2, (v1, v2) ->
+                        Double.isNaN((double) v1) || Double.isNaN((double) v2)
+                                ? 1
+                                : Float.compare((float) v1, (float) v2));
 
                 default -> throw new AssertionError();
             };
@@ -450,12 +433,19 @@ public class ConstantPropagationAnalyzer {
         }
 
         public ConstableValue(int size, Constable source) {
-            this(size, List.of(source), (values) -> {
-                if (values[0].isEmpty()) {
-                    return Optional.empty();
-                }
-                return values[0].get().describeConstable();
-            });
+            this(size, List.of(source), (values) ->
+                    values[0].isPresent() ? values[0].get().describeConstable() : Optional.empty());
+        }
+
+        public ConstableValue(int size, Constable source, Function<Constable, ConstantDesc> operator) {
+            this(size, List.of(source), (values) -> values[0].map(operator));
+        }
+
+        public ConstableValue(int size, Constable source1, Constable source2, BiFunction<Constable, Constable, ConstantDesc> operator) {
+            this(size, List.of(source1, source2), (values) ->
+                    Stream.of(values[0], values[1]).allMatch(Optional::isPresent)
+                            ? Optional.ofNullable(operator.apply(values[0].get(), values[1].get()))
+                            : Optional.empty());
         }
 
         public ConstableValue(int size, List<Constable> sources, ConstableValueDescriber describer) {
