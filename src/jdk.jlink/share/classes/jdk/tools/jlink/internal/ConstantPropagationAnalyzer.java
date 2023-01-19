@@ -8,6 +8,7 @@ import jdk.internal.org.objectweb.asm.tree.AbstractInsnNode;
 import jdk.internal.org.objectweb.asm.tree.FieldInsnNode;
 import jdk.internal.org.objectweb.asm.tree.IntInsnNode;
 import jdk.internal.org.objectweb.asm.tree.LdcInsnNode;
+import jdk.internal.org.objectweb.asm.tree.MethodInsnNode;
 import jdk.internal.org.objectweb.asm.tree.analysis.AnalyzerException;
 import jdk.internal.org.objectweb.asm.tree.analysis.Interpreter;
 import jdk.internal.org.objectweb.asm.tree.analysis.Value;
@@ -20,7 +21,10 @@ import java.lang.constant.DirectMethodHandleDesc;
 import java.lang.constant.DynamicConstantDesc;
 import java.lang.constant.MethodHandleDesc;
 import java.lang.constant.MethodTypeDesc;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiFunction;
@@ -29,76 +33,79 @@ import java.util.stream.Stream;
 
 public class ConstantPropagationAnalyzer {
 
+    private final Map<String, Function<Optional<? extends ConstantDesc>[], Optional<? extends ConstantDesc>>> emulations = new HashMap<>();
+
     public ConstantPropagationAnalyzer() {
         // add type inductions for well-known methods
-        this.registerStaticMethodTypeDescription(
+        // by no means comprehensive, just so we have something to test with
+        this.registerMethodEmulation(
                 "java/lang/Class",
                 "forName",
                 "(Ljava/lang/String;)Ljava/lang/Class;",
-                (args) -> {
-                    if (args[0] instanceof String) {
-                        return Optional.of(ClassDesc.of((String) args[0]));
-                    }
-                    return Optional.empty();
-                });
+                (args) -> args[0]
+//                        .filter(desc -> desc instanceof String)
+                        .map(desc -> ClassDesc.of((String) desc))
+        );
 
-        this.registerMethodTypeDescription(
+        this.registerMethodEmulation(
                 "java/lang/Class",
                 "getName()",
                 "()Ljava/lang/String;",
-                (receiver, args) -> {
-                    if (receiver instanceof ClassDesc classDesc) {
-                        return Optional.of(Type.getType(classDesc.descriptorString()).getClassName());
-                    }
-                    return Optional.empty();
-                });
-
-        this.registerStaticMethodTypeDescription(
-                "java/lang/Integer",
-                "parseInt",
-                "(Ljava/lang/String;)I", (args) -> {
-                    if (args[0] instanceof String) {
-                        return Optional.of(Integer.parseInt((String) args[0]));
-                    }
-                    return Optional.empty();
-                }
+                (receiver, args) -> receiver
+//                        .filter(desc -> desc instanceof ClassDesc)
+                        .map(clazz -> Type.getType(((ClassDesc) clazz).descriptorString()).getClassName())
         );
 
-        this.registerStaticMethodTypeDescription(
+        this.registerMethodEmulation(
+                "java/lang/Integer",
+                "parseInt",
+                "(Ljava/lang/String;)I",
+                (args) -> args[0]
+//                        .filter(desc -> desc instanceof String)
+                        .map(desc -> Integer.parseInt((String) desc))
+        );
+
+        this.registerMethodEmulation(
                 "java/lang/Float",
                 "parseFloat",
-                "(Ljava/lang/String;)F", (args) -> {
-                    if (args[0] instanceof String) {
-                        return Optional.of(Float.parseFloat((String) args[0]));
-                    }
-                    return Optional.empty();
-                }
+                "(Ljava/lang/String;)F",
+                (args) -> args[0]
+//                        .filter(desc -> desc instanceof String)
+                        .map(desc -> Float.parseFloat((String) desc))
+        );
+
+        this.registerMethodEmulation(
+                "java/lang/String",
+                "<init>",
+                "(Ljava/lang/String)V",
+                (args) -> args[0] // returns the created string (same as the input argument)
+//                        .filter(desc -> desc instanceof String)
         );
     }
 
     public void analyze(ResourcePool resources) {
     }
 
-    public void addStaticFieldTarget(String owner, String name) {
+//    public void addStaticFieldTarget(String owner, String name) {
+//    }
+//
+//    public void addReturnTarget(String owner, String method, String descriptor) {
+//    }
+//
+//    public void addLocalVariableTarget(String owner, String method, String descriptor, int index) {
+//    }
+
+    public void registerMethodEmulation(String owner, String method, String descriptor,
+                                        BiFunction<Optional<? extends ConstantDesc>, Optional<? extends ConstantDesc>[], Optional<ConstantDesc>> function) {
+        // TODO: check owner is not an interface
+
+        // TODO: check if the method is declared on a final class, a sealed class with no permitted child, or an
+        //       effectively final class
+        emulations.put(owner + "." + method + descriptor, args -> function.apply(args[0], Arrays.copyOfRange(args, 1, args.length)));
     }
 
-    public void addInvocationArgumentTarget(String owner, String method, String descriptor, int index) {
-    }
-
-    public void addInvocationReturnTarget(String owner, String method, String descriptor) {
-    }
-
-    public void addLocalVariableTarget(String owner, String method, String descriptor, int index) {
-    }
-
-    public void registerMethodTypeDescription(String owner, String method, String descriptor, MethodTypeDescription induction) {
-    }
-
-    public void registerStaticMethodTypeDescription(String owner, String method, String descriptor, StaticMethodTypeDescription induction) {
-    }
-
-    public interface MethodTypeDescription {
-        Optional<ConstantDesc> describe(ConstantDesc receiver, ConstantDesc... args);
+    public void registerMethodEmulation(String owner, String method, String descriptor, Function<Optional<? extends ConstantDesc>[], Optional<? extends ConstantDesc>> function) {
+        emulations.put(owner + "." + method + descriptor, function);
     }
 
     public interface StaticMethodTypeDescription {
@@ -307,7 +314,8 @@ public class ConstantPropagationAnalyzer {
         }
 
         @Override
-        public ConstableValue binaryOperation(AbstractInsnNode insn, ConstableValue value1, ConstableValue value2) throws AnalyzerException {
+        public ConstableValue binaryOperation(AbstractInsnNode insn, ConstableValue value1, ConstableValue value2)
+                throws AnalyzerException {
             return switch (insn.getOpcode()) {
                 // void results
                 case Opcodes.IF_ICMPEQ,
@@ -394,17 +402,61 @@ public class ConstantPropagationAnalyzer {
                 default -> throw new AssertionError();
             };
         }
-//
-//        @Override
-//        public TraceableValue ternaryOperation(AbstractInsnNode insn, TraceableValue value1, TraceableValue value2, TraceableValue value3) throws AnalyzerException {
-//            return null;
-//        }
-//
-//        @Override
-//        public TraceableValue naryOperation(AbstractInsnNode insn, List<? extends TraceableValue> values) throws AnalyzerException {
-//            return null;
-//        }
-//
+
+        @Override
+        public ConstableValue ternaryOperation(AbstractInsnNode insn, ConstableValue value1, ConstableValue value2,
+                                               ConstableValue value3) throws AnalyzerException {
+            // IASTORE, LASTORE, FASTORE, DASTORE, AASTORE, BASTORE, CASTORE, SASTORE
+            // TODO: figure out whether we want array accesses in constant folding
+            return null;
+        }
+
+        @Override
+        public ConstableValue naryOperation(AbstractInsnNode insn, List<? extends ConstableValue> values) throws AnalyzerException {
+            // TODO: result from each function analysis should work together as a call graph
+
+            // INVOKEVIRTUAL, INVOKESPECIAL, INVOKESTATIC, INVOKEINTERFACE, MULTIANEWARRAY and INVOKEDYNAMIC
+            if (insn.getOpcode() == Opcodes.MULTIANEWARRAY) {
+                // TODO: handle multidimensional arrays
+                return null;
+            }
+
+            MethodInsnNode min = (MethodInsnNode) insn;
+            Type rt = Type.getReturnType(min.desc);
+
+            String key = min.owner + "." + min.name + min.desc;
+            Function<Optional<? extends ConstantDesc>[], Optional<? extends ConstantDesc>> emulation =
+                    emulations.get(key);
+
+            // TODO: verify we don't need to handle INVOKEDYNAMIC
+            if (emulation == null || min.getOpcode() == Opcodes.INVOKEDYNAMIC) {
+                // INVOKESPECIAL always pushes an object reference to stack
+                return new ConstableValue(min.getOpcode() == Opcodes.INVOKESPECIAL ? 1 : rt.getSize());
+            }
+
+            // Technically return value from interface invocation cannot be inferred, since the implementation function
+            // is unknown at compile time.
+            // However, INVOKEINTERFACE can still be used for instance methods. So, we treat it as INVOKEVIRTUAL.
+            if (min.getOpcode() == Opcodes.INVOKESTATIC
+                    || min.getOpcode() == Opcodes.INVOKEVIRTUAL
+                    || min.getOpcode() == Opcodes.INVOKEINTERFACE
+                    || min.getOpcode() == Opcodes.INVOKESPECIAL) {
+                if (rt.getSort() == Type.VOID && min.getOpcode() != Opcodes.INVOKESPECIAL) {
+                    return null;
+                }
+
+                return new ConstableValue(rt.getSize(), values, optionals -> {
+                    // FIXME: toArray() causes generic typing information erased
+                    Optional<? extends ConstantDesc>[] constantDescs =
+                            Arrays.stream(optionals).map(optional -> optional.flatMap(Constable::describeConstable))
+                                    .toArray(Optional[]::new);
+                    return emulations.get(key).apply(constantDescs);
+                });
+            }
+
+            throw new AssertionError();
+        }
+
 //        @Override
 //        public void returnOperation(AbstractInsnNode insn, TraceableValue value, TraceableValue expected) throws AnalyzerException {
 //
@@ -419,8 +471,8 @@ public class ConstantPropagationAnalyzer {
     private static class ConstableValue implements Value, Constable {
         private final int size;
         private ConstantDesc constantDesc;
-        private final List<Constable> sources;
-        private final ConstableValueDescriber describer;
+        private final List<? extends Constable> sources;
+        private final Function<Optional<Constable>[], Optional<? extends ConstantDesc>> describer;
 
         public ConstableValue(int size) {
             this(size, null, List.of(), null);
@@ -448,7 +500,7 @@ public class ConstantPropagationAnalyzer {
                             : Optional.empty());
         }
 
-        public ConstableValue(int size, List<Constable> sources, ConstableValueDescriber describer) {
+        public ConstableValue(int size, List<? extends Constable> sources, Function<Optional<Constable>[], Optional<? extends ConstantDesc>> describer) {
             this(size, null, sources, describer);
 
             Objects.requireNonNull(sources);
@@ -456,7 +508,7 @@ public class ConstantPropagationAnalyzer {
             Objects.requireNonNull(describer);
         }
 
-        private ConstableValue(int size, ConstantDesc constantDesc, List<Constable> sources, ConstableValueDescriber describer) {
+        private ConstableValue(int size, ConstantDesc constantDesc, List<? extends Constable> sources, Function<Optional<Constable>[], Optional<? extends ConstantDesc>> describer) {
             if (size == -1) {
                 Objects.requireNonNull(constantDesc);
                 size = constantDesc instanceof Long || constantDesc instanceof Double ? 2 : 1;
@@ -481,7 +533,7 @@ public class ConstantPropagationAnalyzer {
 
             if (describer != null) {
                 // FIXME: toArray() causes generic typing information erased
-                constantDesc = ((Optional<? extends ConstantDesc>) describer.describe(
+                constantDesc = ((Optional<? extends ConstantDesc>) describer.apply(
                         sources.stream().map(Constable::describeConstable).toArray(Optional[]::new)
                 )).orElse(null);
                 return Optional.ofNullable(constantDesc);
@@ -489,9 +541,5 @@ public class ConstantPropagationAnalyzer {
 
             return Optional.empty();
         }
-    }
-
-    private interface ConstableValueDescriber {
-        Optional<? extends ConstantDesc> describe(Optional<Constable>... sources);
     }
 }
