@@ -261,6 +261,8 @@ public class ClassPathPlugin extends AbstractPlugin {
 
         // TODO: use propagation analyzer to lookup SPI usages
         ConstantPropagationAnalyzer analyzer = new ConstantPropagationAnalyzer(pool);
+        analyzer.addLocalVariableTarget("cp/target/Test", "test", "(I)V", 45, 1);
+
         analyzer.analyze();
 
         // TODO: retrieve found SPIs
