@@ -17,6 +17,7 @@ import jdk.internal.org.objectweb.asm.tree.analysis.AnalyzerException;
 import jdk.internal.org.objectweb.asm.tree.analysis.BasicValue;
 import jdk.internal.org.objectweb.asm.tree.analysis.Frame;
 import jdk.tools.jlink.internal.Archive;
+import jdk.tools.jlink.internal.ConstantPropagationAnalyzer;
 import jdk.tools.jlink.internal.JlinkTask;
 import jdk.tools.jlink.internal.LdcInterpreter;
 import jdk.tools.jlink.internal.ModularJarArchive;
@@ -255,6 +256,14 @@ public class ClassPathPlugin extends AbstractPlugin {
                         throw new UncheckedIOException(e);
                     }
                 });
+
+        ResourcePool pool = out.build();
+
+        // TODO: use propagation analyzer to lookup SPI usages
+        ConstantPropagationAnalyzer analyzer = new ConstantPropagationAnalyzer(pool);
+        analyzer.analyze();
+
+        // TODO: retrieve found SPIs
 
         return out.build();
     }
