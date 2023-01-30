@@ -28,6 +28,7 @@ import java.lang.constant.DirectMethodHandleDesc;
 import java.lang.constant.DynamicConstantDesc;
 import java.lang.constant.MethodHandleDesc;
 import java.lang.constant.MethodTypeDesc;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -53,25 +54,42 @@ public class ConstantPropagationAnalyzer {
 
             String s = "123";
             int s_ = Integer.parseInt(s);
+            int s__ = s.length();
 
             String c = "com.example.MySpi";
             Class<?> c_ = Class.forName(c);
+            String c__ = c_.getName();
 
+            Object o = new Object();
 
-            // just make sure we actually use all the variables, so they don't get optimized away
-            System.out.printf("a=%d, b=%d, a_=%d, b_=%d, b__=%d, s=%s, s_=%d, c=%s, c_=%s", a, a_, b, b_, b__, s, s_, c, c_);
-//      LocalVariableTable:
+//       LocalVariableTable:
 //        Start  Length  Slot  Name   Signature
-//            0     113     0     a   I
-//            3     110     1    a_   I
-//            5     108     2     b   I
-//            8     105     3    b_   I
-//           14      99     4   b__   I
-//           18      95     5     s   Ljava/lang/String;
-//           25      88     6    s_   I
-//           29      84     7     c   Ljava/lang/String;
-//           36      77     8    c_   Ljava/lang/Class;
+//            0      60     0     a   I
+//            3      57     1    a_   I
+//            5      55     2     b   I
+//            8      52     3    b_   I
+//           14      46     4   b__   I
+//           18      42     5     s   Ljava/lang/String;
+//           25      35     6    s_   I
+//           32      28     7   s__   I
+//           36      24     8     c   Ljava/lang/String;
+//           43      17     9    c_   Ljava/lang/Class;
+//           50      10    10   c__   Ljava/lang/String;
+//           59       1    11     o   Ljava/lang/Object;
         }
+
+        public static void test2(long l) throws Exception {
+            int i = (int) l / 2;
+            test(i);
+        }
+
+        public static void test3() throws Exception {
+            test2(222L);
+        }
+
+//        public static void test4() throws Exception {
+//            test(999);
+//        }
     }
 
     public static void main(String[] args) throws Exception {
@@ -85,15 +103,21 @@ public class ConstantPropagationAnalyzer {
         ResourcePool pool = poolManager.resourcePool();
 
         ConstantPropagationAnalyzer analyzer = new ConstantPropagationAnalyzer(pool);
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 91, 0); // int a
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 91, 1); // int a_
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 91, 2); // int b
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 91, 3); // int b_
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 91, 4); // int b__
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 91, 5); // int s
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 91, 6); // int s_
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 91, 7); // int c
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 91, 8); // int c_
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 0); // int a
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 1); // int a_
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 2); // int b
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 3); // int b_
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 4); // int b__
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 5); // String s
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 6); // int s_
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 7); // int s__
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 8); // String c
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 9); // Class c_
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 10); // String c__
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 11); // Object o
+
+//        analyzer.addLocalVariableTarget("java/util/ServiceLoader", "load", "(Ljava/lang/Class;)Ljava/util/ServiceLoader;", 0, 0);
+
         analyzer.analyze();
     }
 
@@ -102,14 +126,14 @@ public class ConstantPropagationAnalyzer {
     }
 
     // TODO: support return values
-    private record MethodTarget(Map<Integer, Set<Integer>> variables) {
+    private record MethodTarget(Map<Integer, Set<Integer>> variables, Map<Integer, Set<Integer>> stacks) {
     }
 
     private final Map<String, Function<Optional<? extends ConstantDesc>[], Optional<? extends ConstantDesc>>> emulations = new HashMap<>();
 
     private final ResourcePool resourcePool;
     private final Map<String, String> classToModuleMap;
-    private final Map<String, ClassTarget> targets = new HashMap<>();
+    private final Map<String, ClassTarget> targetRegistry = new HashMap<>();
 
     public ConstantPropagationAnalyzer(ResourcePool resourcePool) {
         this.resourcePool = resourcePool;
@@ -172,11 +196,21 @@ public class ConstantPropagationAnalyzer {
                 (args) -> args[0] // returns the created string (same as the input argument)
 //                        .filter(desc -> desc instanceof String)
         );
+
+        // String -> int
+        this.registerMethodEmulation(
+                "java/lang/String",
+                "length",
+                "()I",
+                (receiver, args) -> receiver
+//                        .filter(desc -> desc instanceof String)
+                        .map(string -> ((String) string).length())
+        );
     }
 
     public void analyze() {
         // TODO: analyze target classes in the resource pool
-        for (Map.Entry<String, ClassTarget> klass : targets.entrySet()) {
+        for (Map.Entry<String, ClassTarget> klass : targetRegistry.entrySet()) {
             for (Map.Entry<String, Map<String, MethodTarget>> method : klass.getValue().methods.entrySet()) {
                 for (Map.Entry<String, MethodTarget> target : method.getValue().entrySet()) {
                     analyzeMethod(klass.getKey(), method.getKey(), target.getKey());
@@ -186,7 +220,7 @@ public class ConstantPropagationAnalyzer {
     }
 
     private ClassTarget createClassTargetIfNotExisted(String owner) {
-        return targets.computeIfAbsent(owner, (key) -> new ClassTarget(/*new HashSet<>(), */new HashMap<>()));
+        return targetRegistry.computeIfAbsent(owner, (key) -> new ClassTarget(/*new HashSet<>(), */new HashMap<>()));
     }
 
 //    public void addStaticFieldTarget(String owner, String name) {
@@ -196,7 +230,7 @@ public class ConstantPropagationAnalyzer {
     private MethodTarget createMethodTargetIfNotExisted(String owner, String name, String descriptor) {
         return createClassTargetIfNotExisted(owner).methods
                 .computeIfAbsent(name, (key) -> new HashMap<>())
-                .computeIfAbsent(descriptor, (key) -> new MethodTarget(new HashMap<>()));
+                .computeIfAbsent(descriptor, (key) -> new MethodTarget(new HashMap<>(), new HashMap<>()));
     }
 
     // TODO: support capturing returned values?
@@ -210,6 +244,12 @@ public class ConstantPropagationAnalyzer {
                 .add(index);
     }
 
+    public void addStackValueTarget(String owner, String method, String descriptor, int inst, int index) {
+        createMethodTargetIfNotExisted(owner, method, descriptor).stacks
+                .computeIfAbsent(inst, key -> new HashSet<>())
+                .add(index);
+    }
+
     // abstract function into a set of outputs (i.e., captured local variables) described by a set of inputs (i.e.,
     // arguments, receiver, fields)
     private static class MethodAbstraction {
@@ -217,6 +257,8 @@ public class ConstantPropagationAnalyzer {
 
         private final Map<Integer, ConstableValue> parameters = new HashMap<>();
         private final Map<Integer, Map<Integer, ConstableValue>> variables = new HashMap<>();
+        private final Map<Integer, Map<Integer, ConstableValue>> stacks = new HashMap<>();
+        private final List<ConstableValue> values = new ArrayList<>();
 
         private MethodAbstraction() {
         }
@@ -230,48 +272,149 @@ public class ConstantPropagationAnalyzer {
 
         private void addOutputLocalVariable(int inst, int index, ConstableValue value) {
             variables.computeIfAbsent(inst, key -> new HashMap<>()).put(index, value);
+            values.add(value);
+        }
+
+        private void addOutputStackValue(int inst, int index, ConstableValue value) {
+            stacks.computeIfAbsent(inst, key -> new HashMap<>()).put(index, value);
+            values.add(value);
         }
 
         private boolean isResolved() {
-            return variables.values().stream()
-                    .flatMap(m -> m.values().stream())
-                    .allMatch(constableValue -> constableValue.describeConstable().isPresent());
+            return values.stream().allMatch(constableValue -> constableValue.describeConstable().isPresent());
         }
     }
 
-    private void analyzeMethod(String owner, String method, String descriptor) {
+    private List<ConstableValue> analyzeMethod(String owner, String method, String descriptor) {
         // TODO: optimize by checking for already-abstracted methods?
         //       while avoiding cyclic structures...
-        MethodAbstraction abstraction = abstractsMethod(owner, method, descriptor);
+        ResourcePoolEntry entry = resourcePool
+                .findEntry("/" + classToModuleMap.get(owner) + "/" + owner + ".class").orElseThrow();
+
+        ClassReader cr = new ClassReader(entry.contentBytes());
+        ClassNode cn = new ClassNode();
+        cr.accept(cn, ClassReader.EXPAND_FRAMES);
+        MethodNode mn = cn.methods.stream().filter(m -> m.name.equals(method) && m.desc.equals(descriptor)).findFirst()
+                .orElseThrow();
+
+        MethodAbstraction abstraction = abstractsMethod(owner, mn);
 
         // START of debug prints ---------------------------------------------------------------------------------------
         System.out.printf("[DEBUG] method output resolution for %s.%s%s: \n", owner, method, descriptor);
         for (Map.Entry<Integer, Map<Integer, ConstableValue>> inst : abstraction.variables.entrySet()) {
             for (Map.Entry<Integer, ConstableValue> var : inst.getValue().entrySet()) {
                 Optional<? extends ConstantDesc> constable = var.getValue().describeConstable();
-                System.out.printf("\tvariable #%d at inst #%d: %s\n",
+                System.out.printf("\tlocal variable #%d at inst #%d: %s\n",
                         var.getKey(),
                         inst.getKey(),
-                        constable.map(c -> c.toString() + " (" + c.getClass().getSimpleName() + ")").orElse("UNRESOLVED"));
+                        constable.map(c -> c + " (" + c.getClass().getSimpleName() + ")").orElse("UNRESOLVED"));
+            }
+        }
+        for (Map.Entry<Integer, Map<Integer, ConstableValue>> inst : abstraction.stacks.entrySet()) {
+            for (Map.Entry<Integer, ConstableValue> stack : inst.getValue().entrySet()) {
+                Optional<? extends ConstantDesc> constable = stack.getValue().describeConstable();
+                System.out.printf("\tstack value #%d at inst #%d: %s\n",
+                        stack.getKey(),
+                        inst.getKey(),
+                        constable.map(c -> c + " (" + c.getClass().getSimpleName() + ")").orElse("UNRESOLVED"));
             }
         }
         // END of debug prints -----------------------------------------------------------------------------------------
 
+        if (abstraction.isResolved()) {
+            return abstraction.values; // TODO: log the resolved values somewhere
+        }
+
         // recursively analyze caller methods
+        Map<String, Stream<MethodNode>> callers = scanForCallers(owner, method, descriptor);
+        Stream<List<ConstableValue>> callerValues = callers.entrySet().stream()
+                .flatMap(e -> e.getValue().map(m -> analyzeMethod(e.getKey(), m.name, m.desc)));
+
+        // TODO: merge values from multiple callers!
+        List<ConstableValue> callerValue = callerValues.findAny().orElse(null);
+        if (callerValue == null) {
+            return abstraction.values;
+        }
+
+        for (int i = 0; i < callers.size(); i++) {
+            Optional<? extends ConstantDesc> desc = callerValue.get(i).describeConstable();
+            if (desc.isPresent()) {
+                abstraction.parameters.get(i).setAdhocValue(desc.get());
+            }
+        }
+
+//        List<ConstableValue> callerValue = callerValues.findAny().get();
+
+        // START of debug prints ---------------------------------------------------------------------------------------
+        System.out.printf("[DEBUG] method output resolution for %s.%s%s: \n", owner, method, descriptor);
+        for (Map.Entry<Integer, Map<Integer, ConstableValue>> inst : abstraction.variables.entrySet()) {
+            for (Map.Entry<Integer, ConstableValue> var : inst.getValue().entrySet()) {
+                Optional<? extends ConstantDesc> constable = var.getValue().describeConstable();
+                System.out.printf("\tlocal variable #%d at inst #%d: %s\n",
+                        var.getKey(),
+                        inst.getKey(),
+                        constable.map(c -> c + " (" + c.getClass().getSimpleName() + ")").orElse("UNRESOLVED"));
+            }
+        }
+        for (Map.Entry<Integer, Map<Integer, ConstableValue>> inst : abstraction.stacks.entrySet()) {
+            for (Map.Entry<Integer, ConstableValue> stack : inst.getValue().entrySet()) {
+                Optional<? extends ConstantDesc> constable = stack.getValue().describeConstable();
+                System.out.printf("\tstack value #%d at inst #%d: %s\n",
+                        stack.getKey(),
+                        inst.getKey(),
+                        constable.map(c -> c + " (" + c.getClass().getSimpleName() + ")").orElse("UNRESOLVED"));
+            }
+        }
+        // END of debug prints -----------------------------------------------------------------------------------------
+
+        return abstraction.values;
     }
 
-    private MethodAbstraction abstractsMethod(String owner, String method, String descriptor) {
-        ResourcePoolEntry entry = resourcePool
-                .findEntry("/" + classToModuleMap.get(owner) + "/" + owner + ".class").orElseThrow();
+    private Map<String, Stream<MethodNode>> scanForCallers(String owner, String method, String descriptor) {
+        Type methodType = Type.getMethodType(descriptor);
+        Type[] argumentTypes = methodType.getArgumentTypes();
 
+        // TODO: optimization opportunity: skip impossible caller according to access policy
+        //       check module visibility and access modifiers
+        return resourcePool.entries().flatMap(entry -> {
+            ClassReader cr = new ClassReader(entry.contentBytes());
+            ClassNode cn = new ClassNode();
+            cr.accept(cn, ClassReader.EXPAND_FRAMES);
 
-        ClassReader cr = new ClassReader(entry.contentBytes());
-        ClassNode cn = new ClassNode();
-        cr.accept(cn, ClassReader.EXPAND_FRAMES);
+            return Map.of(cn.name, cn.methods.stream().filter(mn -> {
+                boolean found = false;
+                for (int i = 0; i < mn.instructions.size(); i++) {
+                    AbstractInsnNode ins = mn.instructions.get(i);
+                    if (
+                            (
+                                    ins.getOpcode() == Opcodes.INVOKEVIRTUAL
+                                            || ins.getOpcode() == Opcodes.INVOKEINTERFACE // TODO: do we need this?
+                                            || ins.getOpcode() == Opcodes.INVOKESTATIC
+                            )
+                                    && ((MethodInsnNode) ins).owner.equals(owner)
+                                    && ((MethodInsnNode) ins).name.equals(method)
+                                    && ((MethodInsnNode) ins).desc.equals(descriptor)
+                    ) {
+                        found = true;
+                        if (ins.getOpcode() != Opcodes.INVOKESTATIC) {
+                            // receiver as argument #0
+                            addStackValueTarget(cn.name, mn.name, mn.desc, i, argumentTypes.length);
+                        }
 
-        MethodNode mn = cn.methods.stream().filter(m -> m.name.equals(method) && m.desc.equals(descriptor)).findFirst()
-                .orElseThrow();
+                        // Note: we don't really care that long and double take two slots. ASM interpreter handles that
+                        //       for us!
+                        for (int j = argumentTypes.length - 1; j >= 0; j--) {
+                            addStackValueTarget(cn.name, mn.name, mn.desc, i, j);
+                        }
+                    }
+                }
 
+                return found;
+            })).entrySet().stream();
+        }).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (v1, v2) -> v1)); // TODO: watch out for cyclic calls!
+    }
+
+    private MethodAbstraction abstractsMethod(String owner, MethodNode mn) {
         Analyzer<ConstableValue> analyzer = new Analyzer<>(new ConstableValueInterpreter());
         Frame<ConstableValue>[] frames;
         try {
@@ -289,14 +432,14 @@ public class ConstantPropagationAnalyzer {
         }
 
         // extract local variable targets
-        if (targets.containsKey(owner)) {
-            ClassTarget ct = targets.get(owner);
-            if (ct.methods.containsKey(method)) {
-                Map<String, MethodTarget> methods = ct.methods.get(method);
+        if (targetRegistry.containsKey(owner)) {
+            ClassTarget ct = targetRegistry.get(owner);
+            if (ct.methods.containsKey(mn.name)) {
+                Map<String, MethodTarget> methods = ct.methods.get(mn.name);
                 for (Map.Entry<String, MethodTarget> mt : methods.entrySet()) {
                     for (Map.Entry<Integer, Set<Integer>> vt : mt.getValue().variables.entrySet()) {
                         for (Integer index : vt.getValue()) {
-                            // XXX: the last frame could've been null if the last instruction being a label
+                            // NOTE: the last frame could've been null if the last instruction being a label
                             //      in this case, we really want the last non-null frame
                             Frame<ConstableValue> frame = null;
                             for (int i = vt.getKey(); i >= 0 && frame == null; i--) {
@@ -305,6 +448,29 @@ public class ConstantPropagationAnalyzer {
 
                             ConstableValue variable = frame.getLocal(index);
                             abstraction.addOutputLocalVariable(vt.getKey(), index, variable);
+                        }
+                    }
+                }
+            }
+        }
+
+        // extract stack value targets
+        if (targetRegistry.containsKey(owner)) {
+            ClassTarget ct = targetRegistry.get(owner);
+            if (ct.methods.containsKey(mn.name)) {
+                Map<String, MethodTarget> methods = ct.methods.get(mn.name);
+                for (Map.Entry<String, MethodTarget> mt : methods.entrySet()) {
+                    for (Map.Entry<Integer, Set<Integer>> st : mt.getValue().stacks.entrySet()) {
+                        for (Integer index : st.getValue()) {
+                            // NOTE: the last frame could've been null if the last instruction being a label
+                            //      in this case, we really want the last non-null frame
+                            Frame<ConstableValue> frame = null;
+                            for (int i = st.getKey(); i >= 0 && frame == null; i--) {
+                                frame = frames[i];
+                            }
+
+                            ConstableValue value = frame.getStack(frame.getStackSize() - 1 - index);
+                            abstraction.addOutputStackValue(st.getKey(), index, value);
                         }
                     }
                 }
@@ -359,27 +525,30 @@ public class ConstantPropagationAnalyzer {
         public ConstableValue newValue(Type type) {
             // TODO: might be a better idea to include data type in ConstableValue
 
-            // XXX: see Interpreter#newParameterValue()
-//            throw new UnsupportedOperationException("use specific operation methods");
-
             if (type == null) {
                 return ConstableValue.UNINITIALIZED_VALUE;
             }
 
-            return switch (type.getSort()) {
-                case Type.VOID -> null;
-                case Type.BOOLEAN,
-                        Type.CHAR,
-                        Type.BYTE,
-                        Type.SHORT,
-                        Type.INT,
-                        Type.FLOAT,
-                        Type.ARRAY,
-                        Type.OBJECT -> new ConstableValue(1);
-                case Type.LONG,
-                        Type.DOUBLE -> new ConstableValue(2);
-                default -> throw new AssertionError();
-            };
+            return new ConstableValue(type.getSize());
+
+            // NOTE: see Interpreter#newParameterValue()
+//            throw new UnsupportedOperationException("use specific operation methods");
+
+//
+//            return switch (type.getSort()) {
+//                case Type.VOID -> null;
+//                case Type.BOOLEAN,
+//                        Type.CHAR,
+//                        Type.BYTE,
+//                        Type.SHORT,
+//                        Type.INT,
+//                        Type.FLOAT,
+//                        Type.ARRAY,
+//                        Type.OBJECT -> new ConstableValue(1);
+//                case Type.LONG,
+//                        Type.DOUBLE -> new ConstableValue(2);
+//                default -> throw new AssertionError();
+//            };
         }
 
         @Override
@@ -734,8 +903,9 @@ public class ConstantPropagationAnalyzer {
         public static final ConstableValue UNINITIALIZED_VALUE = new ConstableValue(1);
 
         private final int size;
-        private ConstantDesc constantDesc; // one of: null, String, Integer, Long, Float, Double, ClassDesc,
+        protected ConstantDesc constantDesc; // one of: null, String, Integer, Long, Float, Double, ClassDesc,
         //         MethodTypeDesc, MethodHandleDesc
+        private ConstantDesc adhocConstantDesc;
         private final List<? extends Constable> sources;
         private final Function<Optional<Constable>[], Optional<? extends ConstantDesc>> describer;
 
@@ -790,8 +960,24 @@ public class ConstantPropagationAnalyzer {
             return size;
         }
 
+        public void setAdhocValue(ConstantDesc constantDesc) {
+            if (this.constantDesc != null) {
+                throw new IllegalStateException();
+            }
+
+            this.adhocConstantDesc = constantDesc;
+        }
+
+        public void clearAdhocValue() {
+            this.adhocConstantDesc = null;
+        }
+
         @Override
         public Optional<? extends ConstantDesc> describeConstable() {
+            if (adhocConstantDesc != null) {
+                return Optional.of(adhocConstantDesc);
+            }
+
             if (constantDesc != null) {
                 return Optional.of(constantDesc);
             }
@@ -805,7 +991,7 @@ public class ConstantPropagationAnalyzer {
                                 // FIXME: a better typing design please...
                                 .map(desc -> desc.isEmpty() || desc.get() instanceof Constable
                                         ? desc
-                                        : Optional.of(new WrappedConstantDescConstableValue(desc.get())))
+                                        : Optional.of(new ConstableValue(desc.get())))
                                 .toArray(Optional[]::new)
                 )).orElse(null);
                 constantDesc = tmp;
@@ -813,21 +999,6 @@ public class ConstantPropagationAnalyzer {
             }
 
             return Optional.empty();
-        }
-    }
-
-    // a wrapper for ConstantDesc that don't implement Constable
-    private static class WrappedConstantDescConstableValue extends ConstableValue {
-        private final ConstantDesc constantDesc;
-
-        public WrappedConstantDescConstableValue(ConstantDesc constantDesc) {
-            super(constantDesc instanceof Long || constantDesc instanceof Double ? 2 : 1);
-            this.constantDesc = constantDesc;
-        }
-
-        @Override
-        public Optional<? extends ConstantDesc> describeConstable() {
-            return Optional.of(constantDesc);
         }
     }
 }
