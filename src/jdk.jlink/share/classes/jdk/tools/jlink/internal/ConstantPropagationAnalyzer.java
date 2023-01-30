@@ -529,6 +529,10 @@ public class ConstantPropagationAnalyzer {
                 return ConstableValue.UNINITIALIZED_VALUE;
             }
 
+            if (type == Type.VOID_TYPE) {
+                return null;
+            }
+
             return new ConstableValue(type.getSize());
 
             // NOTE: see Interpreter#newParameterValue()
