@@ -10,6 +10,8 @@ import jdk.internal.org.objectweb.asm.tree.ClassNode;
 import jdk.internal.org.objectweb.asm.tree.FieldInsnNode;
 import jdk.internal.org.objectweb.asm.tree.IntInsnNode;
 import jdk.internal.org.objectweb.asm.tree.LdcInsnNode;
+import jdk.internal.org.objectweb.asm.tree.LineNumberNode;
+import jdk.internal.org.objectweb.asm.tree.LocalVariableNode;
 import jdk.internal.org.objectweb.asm.tree.MethodInsnNode;
 import jdk.internal.org.objectweb.asm.tree.MethodNode;
 import jdk.internal.org.objectweb.asm.tree.analysis.Analyzer;
@@ -61,21 +63,6 @@ public class ConstantPropagationAnalyzer {
             String c__ = c_.getName();
 
             Object o = new Object();
-
-//       LocalVariableTable:
-//        Start  Length  Slot  Name   Signature
-//            0      60     0     a   I
-//            3      57     1    a_   I
-//            5      55     2     b   I
-//            8      52     3    b_   I
-//           14      46     4   b__   I
-//           18      42     5     s   Ljava/lang/String;
-//           25      35     6    s_   I
-//           32      28     7   s__   I
-//           36      24     8     c   Ljava/lang/String;
-//           43      17     9    c_   Ljava/lang/Class;
-//           50      10    10   c__   Ljava/lang/String;
-//           59       1    11     o   Ljava/lang/Object;
         }
 
         public static void test2(long l) throws Exception {
@@ -103,30 +90,162 @@ public class ConstantPropagationAnalyzer {
         ResourcePool pool = poolManager.resourcePool();
 
         ConstantPropagationAnalyzer analyzer = new ConstantPropagationAnalyzer(pool);
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 0); // int a
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 1); // int a_
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 2); // int b
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 3); // int b_
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 4); // int b__
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 5); // String s
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 6); // int s_
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 7); // int s__
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 8); // String c
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 9); // Class c_
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 10); // String c__
-        analyzer.addLocalVariableTarget(path, "test", "(I)V", 57, 11); // Object o
-
-//        analyzer.addLocalVariableTarget("java/util/ServiceLoader", "load", "(Ljava/lang/Class;)Ljava/util/ServiceLoader;", 0, 0);
+        analyzer.addLocalVariableTarget(path, "test", "(I)V", 55, "b__");
 
         analyzer.analyze();
     }
 
+    private static class TargetRegistry {
+        // class/method -> target descriptors
+        private final Map<String, List<TargetDescriptor>> descriptors = new HashMap<>();
+
+        public void addClassScopeTarget(String clazz, TargetDescriptor target) {
+            Objects.requireNonNull(clazz);
+            Objects.requireNonNull(target);
+
+            if (target.getScope() != TargetDescriptor.Scope.CLASS) {
+                throw new IllegalArgumentException("Not a class scope target descriptor");
+            }
+
+            descriptors.computeIfAbsent(clazz, k -> new ArrayList<>()).add(target);
+        }
+
+        public void addMethodScopeTarget(String clazz, String method, String descriptor, TargetDescriptor target) {
+            Objects.requireNonNull(clazz);
+            Objects.requireNonNull(method);
+            Objects.requireNonNull(descriptor);
+            Objects.requireNonNull(target);
+
+            if (target.getScope() != TargetDescriptor.Scope.METHOD) {
+                throw new IllegalArgumentException("Not a method scope target descriptor");
+            }
+
+            descriptors.computeIfAbsent(clazz + "." + method + descriptor, k -> new ArrayList<>()).add(target);
+        }
+    }
+
+    private abstract static class TargetDescriptor {
+        public enum Scope {CLASS, METHOD}
+
+        /* package-private */
+        abstract Scope getScope();
+
+        public static LocalVariableTargetDescriptor createLocalVariableTargetDescriptor(int instruction,
+                                                                                        int index,
+                                                                                        String name,
+                                                                                        int line) {
+            return new LocalVariableTargetDescriptor(instruction, index, name, line);
+        }
+
+        public static LocalVariableTargetDescriptor createLocalVariableTargetDescriptor(int instruction, int index) {
+            return new LocalVariableTargetDescriptor(instruction, index);
+        }
+
+        public static LocalVariableTargetDescriptor createLocalVariableTargetDescriptor(String name,
+                                                                                        int line,
+                                                                                        MethodNode methodNode) {
+            LineNumberNode lineNumberNode = (LineNumberNode) Arrays.stream(methodNode.instructions.toArray())
+                    .filter(inst -> (inst instanceof LineNumberNode lnn) && lnn.line == line)
+                    .findAny().orElseThrow(() ->
+                            new IllegalArgumentException(
+                                    String.format("Line %d not found in method %s", line, methodNode.name)));
+
+            int instruction = methodNode.instructions.indexOf(lineNumberNode);
+
+            LocalVariableNode variableNode = methodNode.localVariables.stream()
+                    .filter(var -> var.name.equals(name))
+                    .filter(var -> methodNode.instructions.indexOf(var.start) < instruction
+                            && methodNode.instructions.indexOf(var.end) > instruction)
+                    .findFirst().orElseThrow(() ->
+                            new IllegalArgumentException(String.format("Variable \"%s\" not in scope on line %d of %s",
+                                    name,
+                                    line,
+                                    methodNode.name)));
+
+            return new LocalVariableTargetDescriptor(instruction, variableNode.index, name, line);
+        }
+    }
+
+    private static class LocalVariableTargetDescriptor extends TargetDescriptor {
+        public final int instruction;
+        public final int index;
+        public final int line;
+        public final String name;
+
+        private LocalVariableTargetDescriptor(int instruction, int index, String name, int line) {
+            this.instruction = instruction;
+            this.index = index;
+            this.name = name;
+            this.line = line;
+        }
+
+        private LocalVariableTargetDescriptor(int instruction, int index) {
+            this.instruction = instruction;
+            this.index = index;
+            this.name = null;
+            this.line = -1;
+        }
+
+        @Override
+        Scope getScope() {
+            return Scope.METHOD;
+        }
+    }
+
+    private static class StackValueTargetDescriptor extends TargetDescriptor {
+
+        @Override
+        Scope getScope() {
+            return Scope.METHOD;
+        }
+
+        // TODO
+    }
+
     // TODO: support fields
-    private record ClassTarget(/*Set<String> fields, */Map<String, Map<String, MethodTarget>> methods) {
+    private record ClassTarget(String name, Set<MethodTarget> methods) {
+        public MethodTarget addMethodTarget(MethodTarget target) {
+            return methods.stream()
+                    .filter(m -> m.name().equals(target.name()) && m.descriptor().equals(target.descriptor()))
+                    .findAny()
+                    .orElseGet(() -> {
+                        methods.add(target);
+                        return target;
+                    });
+        }
     }
 
     // TODO: support return values
-    private record MethodTarget(Map<Integer, Set<Integer>> variables, Map<Integer, Set<Integer>> stacks) {
+    private record MethodTarget(String name,
+                                String descriptor,
+                                Set<StackValueTarget> stackValues,
+                                Set<LocalVariableTarget> localVariables) {
+
+        public StackValueTarget addStackValueTarget(StackValueTarget target) {
+            return stackValues.stream()
+                    .filter(value -> value.instruction == target.instruction && value.index == target.instruction)
+                    .findAny()
+                    .orElseGet(() -> {
+                        stackValues.add(target);
+                        return target;
+                    });
+        }
+
+        public LocalVariableTarget addLocalVariableTarget(LocalVariableTarget target) {
+            localVariables.stream()
+                    .filter(value -> value.instruction == target.instruction && value.index == target.instruction)
+                    .findAny()
+                    .ifPresent(localVariables::remove);
+
+            localVariables.add(target);
+            return target;
+        }
+    }
+
+    private record StackValueTarget(int instruction, int index) {
+    }
+
+    private record LocalVariableTarget(int instruction, int index, int line, String name) {
     }
 
     private final Map<String, Function<Optional<? extends ConstantDesc>[], Optional<? extends ConstantDesc>>> emulations = new HashMap<>();
@@ -244,6 +363,25 @@ public class ConstantPropagationAnalyzer {
                 .add(index);
     }
 
+    public void addLocalVariableTarget(String owner, String method, String descriptor, int line, String name) {
+        ClassNode cn = getClassNode(owner);
+        MethodNode mn = getMethodNode(cn, method, descriptor);
+
+//        mn.instructions.forEach(System.out::println);
+        LineNumberNode lineNumberNode = (LineNumberNode) Arrays.stream(mn.instructions.toArray()).filter(inst ->
+                (inst instanceof LineNumberNode lnn) && lnn.line == line
+        ).findAny().orElseThrow();
+
+        int inst = mn.instructions.indexOf(lineNumberNode);
+
+        LocalVariableNode variableNode = mn.localVariables.stream()
+                .filter(var -> var.name.equals(name))
+                .filter(var -> mn.instructions.indexOf(var.start) < inst && mn.instructions.indexOf(var.end) > inst)
+                .findFirst().orElseThrow();
+
+        addLocalVariableTarget(owner, method, descriptor, inst, variableNode.index);
+    }
+
     public void addStackValueTarget(String owner, String method, String descriptor, int inst, int index) {
         createMethodTargetIfNotExisted(owner, method, descriptor).stacks
                 .computeIfAbsent(inst, key -> new HashSet<>())
@@ -285,17 +423,29 @@ public class ConstantPropagationAnalyzer {
         }
     }
 
-    private List<ConstableValue> analyzeMethod(String owner, String method, String descriptor) {
-        // TODO: optimize by checking for already-abstracted methods?
-        //       while avoiding cyclic structures...
+    private ClassNode getClassNode(String owner) {
         ResourcePoolEntry entry = resourcePool
                 .findEntry("/" + classToModuleMap.get(owner) + "/" + owner + ".class").orElseThrow();
 
         ClassReader cr = new ClassReader(entry.contentBytes());
         ClassNode cn = new ClassNode();
         cr.accept(cn, ClassReader.EXPAND_FRAMES);
-        MethodNode mn = cn.methods.stream().filter(m -> m.name.equals(method) && m.desc.equals(descriptor)).findFirst()
+
+        return cn;
+    }
+
+    private MethodNode getMethodNode(ClassNode cn, String name, String descriptor) {
+        return cn.methods.stream()
+                .filter(method -> method.name.equals(name) && method.desc.equals(descriptor))
+                .findFirst()
                 .orElseThrow();
+    }
+
+    private List<ConstableValue> analyzeMethod(String owner, String method, String descriptor) {
+        // TODO: optimize by checking for already-abstracted methods?
+        //       while avoiding cyclic structures...
+        ClassNode cn = getClassNode(owner);
+        MethodNode mn = getMethodNode(cn, method, descriptor);
 
         MethodAbstraction abstraction = abstractsMethod(owner, mn);
 
@@ -993,6 +1143,7 @@ public class ConstantPropagationAnalyzer {
                         sources.stream()
                                 .map(Constable::describeConstable)
                                 // FIXME: a better typing design please...
+                                //        create a WrappedConstantDescConstable class?
                                 .map(desc -> desc.isEmpty() || desc.get() instanceof Constable
                                         ? desc
                                         : Optional.of(new ConstableValue(desc.get())))
