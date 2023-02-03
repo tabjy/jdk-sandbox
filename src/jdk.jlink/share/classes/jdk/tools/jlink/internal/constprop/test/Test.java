@@ -4,8 +4,10 @@ import jdk.internal.org.objectweb.asm.ClassReader;
 import jdk.internal.org.objectweb.asm.Type;
 import jdk.internal.org.objectweb.asm.tree.ClassNode;
 import jdk.internal.org.objectweb.asm.tree.MethodNode;
-import jdk.tools.jlink.internal.constprop.ConstantizationTarget;
-import jdk.tools.jlink.internal.constprop.ConstantizationTargetFactory;
+import jdk.tools.jlink.internal.constprop.tagets.ConstantizationTarget;
+import jdk.tools.jlink.internal.constprop.tagets.ConstantizationTargetFactory;
+import jdk.tools.jlink.internal.constprop.values.ConstantizationValueFactory;
+import jdk.tools.jlink.internal.constprop.values.IntegerTypeValue;
 
 import java.io.InputStream;
 import java.util.List;
@@ -64,12 +66,24 @@ public class Test {
                 "(Ljava/lang/String;)Ljava/lang/Class;",
                 mn);
 
+        System.out.println(descriptors);
+
         descriptors = ConstantizationTargetFactory.createStackValueTarget(
                 Type.getType(String.class).getInternalName(),
                 "length",
                 "()I",
                 mn);
 
+        System.out.println(descriptors);
+
         System.out.println("Done");
+
+        ConstantizationValueFactory factory = ConstantizationValueFactory.createDefaultFactory();
+        IntegerTypeValue itv = factory.createValue("I");
+        itv.setDirectValue(42);
+
+        itv = factory.createValue("I", 42);
     }
+
+    static class TestClass<T> {}
 }

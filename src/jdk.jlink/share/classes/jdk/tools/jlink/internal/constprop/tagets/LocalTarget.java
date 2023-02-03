@@ -1,19 +1,19 @@
-package jdk.tools.jlink.internal.constprop;
+package jdk.tools.jlink.internal.constprop.tagets;
 
-class LocalVariableTarget extends ConstantizationTarget {
+class LocalTarget extends ConstantizationTarget {
     public final int instruction;
     public final int index;
     public final int line;
     public final String name;
 
-    LocalVariableTarget(int instruction, int index, String name, int line) {
+    LocalTarget(int instruction, int index, String name, int line) {
         this.instruction = instruction;
         this.index = index;
         this.name = name;
         this.line = line;
     }
 
-    LocalVariableTarget(int instruction, int index) {
+    LocalTarget(int instruction, int index) {
         this.instruction = instruction;
         this.index = index;
         this.name = null;

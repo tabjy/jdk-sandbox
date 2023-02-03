@@ -1,4 +1,4 @@
-package jdk.tools.jlink.internal.constprop;
+package jdk.tools.jlink.internal.constprop.tagets;
 
 import java.util.Collection;
 

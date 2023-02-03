@@ -1,10 +1,10 @@
-package jdk.tools.jlink.internal.constprop;
+package jdk.tools.jlink.internal.constprop.tagets;
 
-class StackValueTarget extends ConstantizationTarget {
+class StackTarget extends ConstantizationTarget {
     public final int instruction;
     public final int index;
 
-    StackValueTarget(int instruction, int index) {
+    StackTarget(int instruction, int index) {
         this.instruction = instruction;
         this.index = index;
     }

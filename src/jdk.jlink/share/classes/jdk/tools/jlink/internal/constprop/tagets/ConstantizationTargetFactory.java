@@ -1,4 +1,4 @@
-package jdk.tools.jlink.internal.constprop;
+package jdk.tools.jlink.internal.constprop.tagets;
 
 import jdk.internal.org.objectweb.asm.Opcodes;
 import jdk.internal.org.objectweb.asm.Type;
@@ -12,18 +12,18 @@ import java.util.List;
 import java.util.stream.IntStream;
 
 public final class ConstantizationTargetFactory {
-    public static ConstantizationTarget createLocalVariableTarget(int instruction,
+    public static ConstantizationTarget createLocalTarget(int instruction,
                                                                   int index,
                                                                   String name,
                                                                   int line) {
-        return new LocalVariableTarget(instruction, index, name, line);
+        return new LocalTarget(instruction, index, name, line);
     }
 
-    public static ConstantizationTarget createLocalVariableTarget(int instruction, int index) {
-        return createLocalVariableTarget(instruction, index, null, -1);
+    public static ConstantizationTarget createLocalTarget(int instruction, int index) {
+        return createLocalTarget(instruction, index, null, -1);
     }
 
-    public static ConstantizationTarget createLocalVariableTarget(String name, int line, MethodNode methodNode) {
+    public static ConstantizationTarget createLocalTarget(String name, int line, MethodNode methodNode) {
         LineNumberNode lineNumberNode = (LineNumberNode) Arrays.stream(methodNode.instructions.toArray())
                 .filter(inst -> (inst instanceof LineNumberNode lnn) && lnn.line == line)
                 .findAny().orElseThrow(() ->
@@ -42,11 +42,11 @@ public final class ConstantizationTargetFactory {
                                 line,
                                 methodNode.name)));
 
-        return createLocalVariableTarget(instruction, variableNode.index, name, line);
+        return createLocalTarget(instruction, variableNode.index, name, line);
     }
 
     public static ConstantizationTarget createStackValueTarget(int instruction, int index) {
-        return new StackValueTarget(instruction, index);
+        return new StackTarget(instruction, index);
     }
 
     public static List<List<ConstantizationTarget>> createStackValueTarget(String owner,
