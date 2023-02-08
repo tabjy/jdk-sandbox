@@ -1,6 +1,8 @@
 package jdk.tools.jlink.internal.constprop.values;
 
-public class ReferenceTypeValue<T extends Object> extends ConstantizationValue<T> {
+import jdk.tools.jlink.internal.constprop.values.collections.ConstantCollection;
+
+public class ReferenceTypeValue<T /*extends Object*/> extends ConstantizationValue<T> {
     public boolean isImmutable() {
         return false;
     }
@@ -17,6 +19,12 @@ public class ReferenceTypeValue<T extends Object> extends ConstantizationValue<T
 
     @Override
     public T getDirectValue() {
+        return null;
+    }
+
+    @Override
+    public ConstantCollection<T> getValues() {
+        // TODO
         return null;
     }
 }

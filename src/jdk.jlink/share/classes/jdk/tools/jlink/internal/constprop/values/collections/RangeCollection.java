@@ -1,4 +1,4 @@
-package jdk.tools.jlink.internal.constprop.values;
+package jdk.tools.jlink.internal.constprop.values.collections;
 
 import java.util.function.Function;
 
@@ -67,5 +67,10 @@ public class RangeCollection<T extends Comparable<T>> extends ConstantCollection
                     min.compareTo(that.min) < 0 ? min : that.min,
                     max.compareTo(that.max) > 0 ? max : that.max);
         }
+    }
+
+    @Override
+    public ConstantCollection<T> copy() {
+        return new RangeCollection<>(min, max);
     }
 }

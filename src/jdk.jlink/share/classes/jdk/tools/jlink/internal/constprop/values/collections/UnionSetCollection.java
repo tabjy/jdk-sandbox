@@ -1,4 +1,4 @@
-package jdk.tools.jlink.internal.constprop.values;
+package jdk.tools.jlink.internal.constprop.values.collections;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -21,7 +21,6 @@ public class UnionSetCollection<T> extends ConstantCollection<T> {
         add(value);
     }
 
-
     @Override
     public boolean add(T value) {
         if (limit == -1 || values.size() < limit) {
@@ -34,14 +33,21 @@ public class UnionSetCollection<T> extends ConstantCollection<T> {
 
     @Override
     public ConstantCollection<T> merge(ConstantCollection<T> other) {
-        if (!(other instanceof UnionSetCollection<T> that)) {
-            throw new IllegalArgumentException("Incompatible collection type");
-        } else {
+        if (other instanceof UnionSetCollection<T> that) {
             UnionSetCollection<T> result = new UnionSetCollection<>(Math.max(limit, that.limit));
             values.forEach(result::add);
             that.values.forEach(result::add);
 
             return result;
         }
+
+        throw new IllegalArgumentException("Incompatible collection type");
+    }
+
+    @Override
+    public ConstantCollection<T> copy() {
+        UnionSetCollection<T> copy = new UnionSetCollection<>(limit);
+        values.forEach(copy::add);
+        return copy;
     }
 }

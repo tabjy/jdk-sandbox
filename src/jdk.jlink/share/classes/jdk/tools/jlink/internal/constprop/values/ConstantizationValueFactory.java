@@ -18,8 +18,6 @@ public class ConstantizationValueFactory {
         factory.registryTypeValue("Ljava/lang/String;", StringTypeValue::new);
         factory.registryTypeValue("Ljava/lang/Class;", ClassTypeValue::new);
 
-        // TODO: registry arrays
-
         return factory;
     }
 
@@ -28,6 +26,8 @@ public class ConstantizationValueFactory {
     }
 
     public <V, T extends ConstantizationValue<V>> T createValue(String descriptor) {
+        // TODO: handle array types
+
         Supplier<? extends ConstantizationValue<?>> supplier = registrations.get(descriptor);
         if (supplier == null) {
             if (descriptor.startsWith("L")) {
