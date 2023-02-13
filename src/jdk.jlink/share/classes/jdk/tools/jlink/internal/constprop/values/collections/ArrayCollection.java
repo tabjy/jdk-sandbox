@@ -1,9 +1,7 @@
 package jdk.tools.jlink.internal.constprop.values.collections;
 
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -23,7 +21,7 @@ public class ArrayCollection<T> extends ConstantCollection<T[]> {
     }
 
     public ArrayCollection(Supplier<ConstantCollection<T>> elementCollectionFactory) {
-        this(-1, UnionSetCollection::new);
+        this(-1, elementCollectionFactory);
     }
 
     public ArrayCollection(int length, Supplier<ConstantCollection<T>> elementCollectionFactory) {

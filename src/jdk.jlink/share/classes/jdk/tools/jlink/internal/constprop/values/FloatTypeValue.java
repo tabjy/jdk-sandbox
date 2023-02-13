@@ -5,15 +5,4 @@ public final class FloatTypeValue extends ValueTypeValue<Float> {
     public int getSize() {
         return 1;
     }
-
-    @Override
-    public void setDirectValue(Float value) {
-        // TODO
-    }
-
-    @Override
-    public Float getDirectValue() {
-        // TODO
-        return null;
-    }
 }

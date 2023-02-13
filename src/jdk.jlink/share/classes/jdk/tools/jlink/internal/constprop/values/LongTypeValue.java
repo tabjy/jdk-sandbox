@@ -5,15 +5,4 @@ public final class LongTypeValue extends ValueTypeValue<Long> {
     public int getSize() {
         return 2;
     }
-
-    @Override
-    public void setDirectValue(Long value) {
-        // TODO
-    }
-
-    @Override
-    public Long getDirectValue() {
-        // TODO
-        return null;
-    }
 }

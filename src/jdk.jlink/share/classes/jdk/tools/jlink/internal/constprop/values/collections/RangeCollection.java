@@ -16,9 +16,8 @@ public class RangeCollection<T extends Comparable<T>> extends ConstantCollection
         this.max = value;
     }
 
-    public RangeCollection(T min, T max) {
-        this.min = min;
-        this.max = max;
+    public RangeCollection(T v1, T v2) {
+        update(v1, v2);
     }
 
     public T getMax() {
@@ -29,10 +28,7 @@ public class RangeCollection<T extends Comparable<T>> extends ConstantCollection
         return min;
     }
 
-    public boolean project(Function<T, T> projection) {
-        T v1 = projection.apply(min);
-        T v2 = projection.apply(max);
-
+    public boolean update(T v1, T v2) {
         T newMin = v1.compareTo(v2) < 0 ? v1 : v2;
         T newMax = v1.compareTo(v2) > 0 ? v1 : v2;
 
@@ -43,6 +39,10 @@ public class RangeCollection<T extends Comparable<T>> extends ConstantCollection
         }
 
         return false;
+    }
+
+    public boolean project(Function<T, T> projection) {
+        return update(projection.apply(min), projection.apply(max));
     }
 
     @Override

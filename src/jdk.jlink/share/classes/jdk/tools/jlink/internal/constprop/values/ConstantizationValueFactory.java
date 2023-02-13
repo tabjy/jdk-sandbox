@@ -1,5 +1,7 @@
 package jdk.tools.jlink.internal.constprop.values;
 
+import jdk.tools.jlink.internal.constprop.values.collections.ConstantCollection;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -14,7 +16,7 @@ public class ConstantizationValueFactory {
         factory.registryTypeValue("F", FloatTypeValue::new);
         factory.registryTypeValue("L", LongTypeValue::new);
         factory.registryTypeValue("D", DoubleTypeValue::new);
-        factory.registryTypeValue("Ljava/lang/Object;", ReferenceTypeValue::new);
+        factory.registryTypeValue("Ljava/lang/Object;", ImmutableReferenceTypeValue::new);
         factory.registryTypeValue("Ljava/lang/String;", StringTypeValue::new);
         factory.registryTypeValue("Ljava/lang/Class;", ClassTypeValue::new);
 
@@ -33,7 +35,7 @@ public class ConstantizationValueFactory {
             if (descriptor.startsWith("L")) {
                 // TODO: better typing
                 @SuppressWarnings("unchecked")
-                T t = (T) new ReferenceTypeValue<V>();
+                T t = (T) new ImmutableReferenceTypeValue<V>();
                 return t;
             }
 
@@ -50,5 +52,12 @@ public class ConstantizationValueFactory {
         T constantizationValue = createValue(descriptor);
         constantizationValue.setDirectValue(value);
         return constantizationValue;
+    }
+
+    //     TODO: createArrayValue(String descriptor, )
+
+    @SafeVarargs
+    public final <T> ConstantizationValue<T> mergeValues(ConstantizationValue<T>... values) {
+        return new ConstantizationValue.MergedConstantizationValue<>(values);
     }
 }
