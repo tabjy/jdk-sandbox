@@ -1,5 +1,7 @@
 package jdk.tools.jlink.internal.constprop.values.collections;
 
+import java.util.Iterator;
+import java.util.List;
 import java.util.function.Function;
 
 /**
@@ -29,12 +31,12 @@ public class RangeCollection<T extends Comparable<T>> extends ConstantCollection
     }
 
     public boolean update(T v1, T v2) {
-        T newMin = v1.compareTo(v2) < 0 ? v1 : v2;
-        T newMax = v1.compareTo(v2) > 0 ? v1 : v2;
+        T min = v1.compareTo(v2) < 0 ? v1 : v2;
+        T max = v1.compareTo(v2) > 0 ? v1 : v2;
 
-        if (newMin.compareTo(min) < 0 || newMax.compareTo(max) > 0) {
-            min = newMin;
-            max = newMax;
+        if (min.compareTo(this.min) < 0 || max.compareTo(this.max) > 0) {
+            this.min = min;
+            this.max = max;
             return true;
         }
 
@@ -43,6 +45,11 @@ public class RangeCollection<T extends Comparable<T>> extends ConstantCollection
 
     public boolean project(Function<T, T> projection) {
         return update(projection.apply(min), projection.apply(max));
+    }
+
+    @Override
+    public int size() {
+        return min == max ? 1 : 2;
     }
 
     @Override
@@ -72,5 +79,10 @@ public class RangeCollection<T extends Comparable<T>> extends ConstantCollection
     @Override
     public ConstantCollection<T> copy() {
         return new RangeCollection<>(min, max);
+    }
+
+    @Override
+    public Iterator<T> iterator() {
+        return (min == max ? List.of(min) : List.of(min, max)).iterator();
     }
 }

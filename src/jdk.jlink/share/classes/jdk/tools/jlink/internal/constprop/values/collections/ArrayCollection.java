@@ -1,16 +1,17 @@
 package jdk.tools.jlink.internal.constprop.values.collections;
 
-import java.util.HashMap;
-import java.util.Map;
+import jdk.tools.jlink.internal.constprop.utils.SparseArray;
+
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
 import java.util.function.Supplier;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
-public class ArrayCollection<T> extends ConstantCollection<T[]> {
-    private final int length; // -1: unknown length
+public class ArrayCollection<T> extends ConstantCollection<SparseArray<T>> {
     private final Supplier<ConstantCollection<T>> elementCollectionFactory;
-
-    private final Map<Integer, ConstantCollection<T>> values = new HashMap<>(); // sparse array with hash map
+    private final SparseArray<ConstantCollection<T>> values;
 
     public ArrayCollection() {
         this(-1, UnionSetCollection::new);
@@ -25,37 +26,64 @@ public class ArrayCollection<T> extends ConstantCollection<T[]> {
     }
 
     public ArrayCollection(int length, Supplier<ConstantCollection<T>> elementCollectionFactory) {
-        this.length = length;
+        this.values = new SparseArray<>(length);
         this.elementCollectionFactory = elementCollectionFactory;
     }
 
-    public int getLength() {
-        return length;
+    @Override
+    public int size() {
+        return StreamSupport.stream(values.spliterator(), false).mapToInt(ConstantCollection::size).max()
+                .orElse(0);
     }
 
-    @Override
-    public boolean add(T[] value) {
-        return IntStream.range(0, value.length)
-                .mapToObj(i -> add(i, value[i]))
-                .allMatch(added -> added);
+    public int length() {
+        return values.length();
     }
 
     public boolean add(int index, T value) {
-        if (length != -1 && index >= length) {
+        try {
+            ConstantCollection<T> element = values.get(index);
+            if (element == null) {
+                element = elementCollectionFactory.get();
+                values.set(index, element);
+            }
+            return element.add(value);
+        } catch (ArrayIndexOutOfBoundsException e) {
             return false;
         }
-
-        ConstantCollection<T> element = values.computeIfAbsent(index, i -> elementCollectionFactory.get());
-        return element.add(value);
     }
 
     @Override
-    public ConstantCollection<T[]> merge(ConstantCollection<T[]> other) {
+    public boolean add(SparseArray<T> value) {
+        int length = Math.max(values.length(), value.length());
+        if (values.length() == -1 || value.length() == -1) {
+            length = -1;
+        }
+
+        values.resize(length);
+        return Arrays.stream(value.indices()).mapToObj(i -> add(i, value.get(i))).allMatch(added -> added);
+    }
+
+    @Override
+    public ConstantCollection<SparseArray<T>> merge(ConstantCollection<SparseArray<T>> other) {
         if (other instanceof ArrayCollection<T> that) {
-            ArrayCollection<T> result = new ArrayCollection<>(Math.max(length, that.length), elementCollectionFactory);
-            Stream.concat(this.values.keySet().stream(), that.values.keySet().stream())
+            ArrayCollection<T> result = new ArrayCollection<>(Math.max(this.length(), that.length()),
+                    elementCollectionFactory);
+            Stream.concat(Arrays.stream(this.values.indices()).boxed(), Arrays.stream(that.values.indices()).boxed())
                     .distinct()
-                    .forEach(i -> result.values.put(i, this.values.get(i).merge(that.values.get(i))));
+                    .forEach(i -> {
+                        ConstantCollection<T> thisElement = this.values.get(i);
+                        ConstantCollection<T> thatElement = that.values.get(i);
+
+                        if (thisElement != null && thatElement != null) {
+                            result.values.set(i, thisElement.merge(thatElement));
+                        } else if (thisElement != null) {
+                            result.values.set(i, thisElement);
+                        } else if (thatElement != null) {
+                            result.values.set(i, thatElement);
+                        }
+                    });
+
             return result;
         }
 
@@ -63,9 +91,33 @@ public class ArrayCollection<T> extends ConstantCollection<T[]> {
     }
 
     @Override
-    public ConstantCollection<T[]> copy() {
-        ArrayCollection<T> copy = new ArrayCollection<>(length, elementCollectionFactory);
-        values.forEach((i, collection) -> copy.values.put(i, collection.copy()));
+    public ConstantCollection<SparseArray<T>> copy() {
+        ArrayCollection<T> copy = new ArrayCollection<>(length(), elementCollectionFactory);
+        Arrays.stream(values.indices()).forEach(i -> copy.values.set(i, values.get(i).copy()));
         return copy;
+    }
+
+    @Override
+    public Iterator<SparseArray<T>> iterator() {
+        int[] indices = this.values.indices();
+        List<Iterator<T>> iterators = Arrays.stream(indices).mapToObj(i -> values.get(i).iterator()).toList();
+
+        return new Iterator<>() {
+            @Override
+            public boolean hasNext() {
+                return iterators.stream().anyMatch(Iterator::hasNext);
+            }
+
+            @Override
+            public SparseArray<T> next() {
+                SparseArray<T> result = new SparseArray<>(length());
+                for (int i = 0; i < indices.length; i++) {
+                    if (iterators.get(i).hasNext()) {
+                        result.set(indices[i], iterators.get(i).next());
+                    }
+                }
+                return result;
+            }
+        };
     }
 }

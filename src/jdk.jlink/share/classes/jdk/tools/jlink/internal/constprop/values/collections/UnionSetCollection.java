@@ -1,6 +1,7 @@
 package jdk.tools.jlink.internal.constprop.values.collections;
 
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Set;
 
 public class UnionSetCollection<T> extends ConstantCollection<T> {
@@ -19,6 +20,11 @@ public class UnionSetCollection<T> extends ConstantCollection<T> {
         this(limit);
 
         add(value);
+    }
+
+    @Override
+    public int size() {
+        return values.size();
     }
 
     @Override
@@ -50,4 +56,11 @@ public class UnionSetCollection<T> extends ConstantCollection<T> {
         values.forEach(copy::add);
         return copy;
     }
+
+    @Override
+    public Iterator<T> iterator() {
+        return values.iterator();
+    }
+
+
 }
