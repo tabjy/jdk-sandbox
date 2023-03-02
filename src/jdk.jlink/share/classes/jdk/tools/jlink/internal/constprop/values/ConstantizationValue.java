@@ -34,7 +34,17 @@ public abstract sealed class ConstantizationValue<T> implements Value permits
         this.operator = Objects.requireNonNull(operator);
     }
 
-    public abstract ConstantCollection<T> getValues();
+    protected abstract ConstantCollection<T> newConstantCollection();
+
+    public ConstantCollection<T> getValues() {
+        ConstantCollection<T> collection = newConstantCollection();
+        if (isDirectValue()) {
+            collection.add(directValue);
+            return collection;
+        }
+
+        // TODO
+    }
 
     public boolean isTainted() {
         // TODO: check indirect value is tainted
@@ -64,7 +74,7 @@ public abstract sealed class ConstantizationValue<T> implements Value permits
         @Override
         public ConstantCollection<T> getValues() {
             return Arrays.stream(values).skip(1)
-                    .reduce(values[0].getValues(), (acc, cur) -> acc.merge(cur.getValues()), (a, b) -> a);
+                    .reduce(values[0].getValues(), (acc, cur) -> acc.merge(cur.getValues()), ConstantCollection::merge);
         }
     }
 }

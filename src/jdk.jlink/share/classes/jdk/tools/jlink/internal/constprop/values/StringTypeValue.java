@@ -1,12 +1,6 @@
 package jdk.tools.jlink.internal.constprop.values;
 
-public final class StringTypeValue extends ReferenceTypeValue<String> {
-
-    @Override
-    public boolean isImmutable() {
-        return true;
-    }
-
+public final class StringTypeValue extends ImmutableReferenceTypeValue<String> {
     @Override
     public int getSize() {
         return 1;

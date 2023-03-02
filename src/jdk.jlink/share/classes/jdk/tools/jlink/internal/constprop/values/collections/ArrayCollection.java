@@ -5,6 +5,7 @@ import jdk.tools.jlink.internal.constprop.utils.SparseArray;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -30,6 +31,19 @@ public class ArrayCollection<T> extends ConstantCollection<SparseArray<T>> {
         this.elementCollectionFactory = elementCollectionFactory;
     }
 
+    public ArrayCollection(T[] array, Supplier<ConstantCollection<T>> elementCollectionFactory) {
+        this(array.length, elementCollectionFactory);
+
+        for (int i = 0; i < array.length; i++) {
+            this.set(i, array[i]);
+        }
+    }
+
+    @Override
+    protected void doDegrade() {
+        values.clear();
+    }
+
     @Override
     public int size() {
         return StreamSupport.stream(values.spliterator(), false).mapToInt(ConstantCollection::size).max()
@@ -41,15 +55,31 @@ public class ArrayCollection<T> extends ConstantCollection<SparseArray<T>> {
     }
 
     public boolean add(int index, T value) {
+        return this.get(index).map(element -> element.add(value)).orElse(false);
+    }
+
+    public boolean set(int index, T value) {
+        ConstantCollection<T> element = elementCollectionFactory.get();
+        element.add(value);
+
+        try {
+            values.set(index, element);
+            return true;
+        } catch (ArrayIndexOutOfBoundsException e) {
+            return false;
+        }
+    }
+
+    public Optional<ConstantCollection<T>> get(int index) {
         try {
             ConstantCollection<T> element = values.get(index);
             if (element == null) {
                 element = elementCollectionFactory.get();
                 values.set(index, element);
             }
-            return element.add(value);
+            return Optional.ofNullable(element);
         } catch (ArrayIndexOutOfBoundsException e) {
-            return false;
+            return Optional.empty();
         }
     }
 
@@ -91,7 +121,7 @@ public class ArrayCollection<T> extends ConstantCollection<SparseArray<T>> {
     }
 
     @Override
-    public ConstantCollection<SparseArray<T>> copy() {
+    public ConstantCollection<SparseArray<T>> doCopy() {
         ArrayCollection<T> copy = new ArrayCollection<>(length(), elementCollectionFactory);
         Arrays.stream(values.indices()).forEach(i -> copy.values.set(i, values.get(i).copy()));
         return copy;

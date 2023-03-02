@@ -47,6 +47,10 @@ public class SparseArray<T> implements Iterable<T> {
         values.entrySet().removeIf(entry -> entry.getKey() >= length);
     }
 
+    public void clear() {
+        values.clear();
+    }
+
     public Iterator<T> iterator() {
         return this.values.entrySet().stream().sorted(Map.Entry.comparingByKey()).map(Map.Entry::getValue).iterator();
     }

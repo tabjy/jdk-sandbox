@@ -5,11 +5,17 @@ import java.util.Iterator;
 import java.util.Set;
 
 public class UnionSetCollection<T> extends ConstantCollection<T> {
+    private static final int DEFAULT_LIMIT = -1;
+
     private final int limit;
     private final Set<T> values = new HashSet<>();
 
     public UnionSetCollection() {
-        this(-1);
+        this(DEFAULT_LIMIT);
+    }
+
+    public UnionSetCollection(T value) {
+        this(value, DEFAULT_LIMIT);
     }
 
     public UnionSetCollection(int limit) {
@@ -23,17 +29,29 @@ public class UnionSetCollection<T> extends ConstantCollection<T> {
     }
 
     @Override
+    protected void doDegrade() {
+        values.clear();
+    }
+
+    @Override
+    protected ConstantCollection<T> doCopy() {
+        UnionSetCollection<T> copy = new UnionSetCollection<>(limit);
+        values.forEach(copy::add);
+        return copy;
+    }
+
+    @Override
     public int size() {
         return values.size();
     }
 
     @Override
     public boolean add(T value) {
-        if (limit == -1 || values.size() < limit) {
+        if (limit == -1 || values.size() < limit || values.contains(value)) {
             return values.add(value);
         }
 
-        // TODO: need to degrade to reference type
+        degrade();
         return false;
     }
 
@@ -48,13 +66,6 @@ public class UnionSetCollection<T> extends ConstantCollection<T> {
         }
 
         throw new IllegalArgumentException("Incompatible collection type");
-    }
-
-    @Override
-    public ConstantCollection<T> copy() {
-        UnionSetCollection<T> copy = new UnionSetCollection<>(limit);
-        values.forEach(copy::add);
-        return copy;
     }
 
     @Override
